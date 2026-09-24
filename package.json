@@ -1,0 +1,8 @@
+{
+  "name": "midway-1022",
+  "private": true,
+  "type": "module",
+  "description": "Midway, 4 June 1942, 10:22 a.m.: a Dauntless dive-bomber's attack on the carrier Akagi, rendered in code.",
+  "scripts": { "preview": "npx http-server . -p 8080 -c-1", "render": "node tools/render.mjs --out video/midway-1022.mp4" },
+  "devDependencies": { "playwright": "^1.56.1" }
+}

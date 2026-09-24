@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Midway · 10:22</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+html,body{margin:0;background:#000;color:#ddd;font:15px Georgia,serif}
+#stage{position:relative;width:100vw;max-width:calc(100vh*16/9);aspect-ratio:16/9;margin:0 auto}
+#stage canvas{position:absolute;inset:0;width:100%;height:100%}
+#ui{position:fixed;left:0;right:0;bottom:0;display:flex;gap:12px;align-items:center;padding:10px 16px;background:linear-gradient(transparent,rgba(0,0,0,.8));opacity:.25}
+#ui:hover{opacity:1}#ui input{flex:1}button{background:none;border:1px solid #777;color:#ddd;padding:4px 14px}
+</style></head><body>
+<div id="stage"><canvas id="gl" width="1920" height="1080"></canvas><canvas id="ov" width="1920" height="1080"></canvas></div>
+<div id="ui"><button id="play">Play</button><input id="seek" type="range" min="0" max="1000" value="0"><span id="clock"></span></div>
+<audio id="audio" src="../data/mix.m4a" preload="auto"></audio>
+<script type="module">
+import { init, renderFrame, frameJPEG } from './main.js';
+const film = await init(document.getElementById('gl'), document.getElementById('ov'));
+window.film = film; window.frameJPEG = frameJPEG; window.READY = true;
+if (!location.search.includes('render')) {
+  const audio = document.getElementById('audio'), seek = document.getElementById('seek'), clock = document.getElementById('clock'), btn = document.getElementById('play');
+  let T = +(new URLSearchParams(location.search).get('t') || 0), playing = false, last = 0;
+  const draw = () => { renderFrame(T); seek.value = T / film.total * 1000; clock.textContent = T.toFixed(1) + 's'; };
+  draw();
+  btn.onclick = () => { playing = !playing; btn.textContent = playing ? 'Pause' : 'Play'; if (playing) { audio.currentTime = T; audio.play().catch(() => {}); last = performance.now(); requestAnimationFrame(tick); } else audio.pause(); };
+  seek.oninput = () => { T = seek.value / 1000 * film.total; audio.currentTime = T; draw(); };
+  function tick(now) { if (!playing) return; T = audio.readyState >= 2 && !audio.paused ? audio.currentTime : T + (now - last) / 1000; last = now; if (T >= film.total) { playing = false; return; } draw(); requestAnimationFrame(tick); }
+}
+</script></body></html>
