@@ -48,5 +48,20 @@ export class Geo {
     }
   }
   append(o, xf = p => p) { for (let i = 0; i < o.P.length; i += 9) this.tri(xf(o.P.slice(i, i + 3)), xf(o.P.slice(i + 3, i + 6)), xf(o.P.slice(i + 6, i + 9)), o.M[i / 3]); }
-  arrays() { return { P: new Float32Array(this.P), N: new Float32Array(this.N), M: new Float32Array(this.M), count: this.P.length / 3 }; }
+  // smooth shading: average the normals of faces meeting at a vertex when they bend by less than ~acos(cosMin)
+  smooth(cosMin = 0.5) {
+    const P = this.P, N = this.N, M = this.M, n = M.length, out = new Float32Array(N.length);
+    const buckets = new Map();
+    for (let i = 0; i < n; i++) {
+      const k = `${Math.round(P[i * 3] * 500)},${Math.round(P[i * 3 + 1] * 500)},${Math.round(P[i * 3 + 2] * 500)},${M[i]}`;
+      let b = buckets.get(k); if (!b) buckets.set(k, (b = [])); b.push(i);
+    }
+    for (const b of buckets.values()) for (const i of b) {
+      let x = 0, y = 0, z = 0;
+      for (const j of b) { const d = N[i * 3] * N[j * 3] + N[i * 3 + 1] * N[j * 3 + 1] + N[i * 3 + 2] * N[j * 3 + 2]; if (d >= cosMin) { x += N[j * 3]; y += N[j * 3 + 1]; z += N[j * 3 + 2]; } }
+      const l = Math.hypot(x, y, z) || 1; out[i * 3] = x / l; out[i * 3 + 1] = y / l; out[i * 3 + 2] = z / l;
+    }
+    return out;
+  }
+  arrays(cosMin = 0.5) { return { P: new Float32Array(this.P), N: cosMin === null ? new Float32Array(this.N) : this.smooth(cosMin), M: new Float32Array(this.M), count: this.P.length / 3 }; }
 }

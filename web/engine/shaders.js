@@ -63,8 +63,12 @@ vec3 skyColor(vec3 rd) {
 // ---- the cumulus layer ----
 float cloudDens(vec2 xz, int oct) {
   vec2 p = (xz + vec2(uTime * 4., uTime * 1.5)) / uCloud.z;
-  float n = gfbm(p, oct);
-  float d = smoothstep(uCloud.y, uCloud.y + 0.26, n + 0.14 * (gnoise(p * 0.21) - 0.5));
+  // trade-wind cumulus: clustered in streets and patches, with clear lanes between and a range of sizes
+  float cluster = gnoise(p * 0.16 + vec2(3.1, 7.7)) * 0.7 + gnoise(p * 0.37 - 1.3) * 0.3;
+  float n = gfbm(p * 0.78, oct);
+  float th = uCloud.y + (0.5 - cluster) * 0.34;
+  float d = smoothstep(th, th + 0.2, n + 0.1 * (gnoise(p * 0.21) - 0.5));
+  d *= 0.82 + 0.18 * smoothstep(th, th + 0.45, n);
   for (int i = 0; i < 2; i++) {
     float r = length(xz - uHole[i].xy) / uHole[i].z;
     d *= 1. - uHole[i].w * (1. - smoothstep(0.55, 1.0, r + (gnoise(xz / 160.) - 0.5) * 0.4));
@@ -314,7 +318,7 @@ void main() {
     if (abs(vLP.x) > 3.4 && abs(vLP.x) < 5.4) { ip = vec2(vLP.x - sign(vLP.x) * 4.3, vLP.z - 0.45); r = 0.62; }
     if (abs(vLP.x) < 0.8 && vLP.z < -2.4 && vLP.z > -4.4 && vLP.y > -0.4) { ip = vec2(vLP.z + 3.35, vLP.y - 0.2); r = 0.42; }
     if (r > 0. && length(ip) < r) alb = star(ip, r) > 0.5 ? vec3(0.55) : vec3(0.03, 0.05, 0.16);
-    if (uCockpit == 1 && abs(vLP.x) < 0.66 && vLP.z < 2.25 && vLP.z > -3.) alb = vec3(0.035, 0.045, 0.03);
+    if (uCockpit == 1 && abs(vLP.x) < 0.66 && vLP.z < 2.25 && vLP.z > -3.) alb = vec3(0.03, 0.036, 0.042);
     // dive-brake perforations: holes you can see the sky through
     if (m == 4 || m == 11) {
       vec2 hp = vec2(abs(vLP.x) * 7.5, vLP.z * 7.5);
@@ -329,6 +333,13 @@ void main() {
   else if (m == 8) { alb = vec3(0.006); spec = 0.004; }
   else if (m == 9) alb = vec3(0.45, 0.06, 0.05);
   else if (m == 10) alb = vec3(0.24, 0.25, 0.2);
+  else if (m == 12) { alb = vec3(0.025, 0.026, 0.028); spec = 0.18; rough = 60.; }            // gunmetal
+  else if (m == 13) {                                                                         // perforated cooling jacket
+    float ang = atan(vLP.y - 1.14, vLP.x - sign(vLP.x) * 0.095);
+    vec2 hp = vec2(ang * 1.6, vLP.z * 28.);
+    alb = length(fract(hp) - 0.5) < 0.3 ? vec3(0.004) : vec3(0.03, 0.031, 0.033); spec = 0.16; rough = 50.;
+  }
+  else if (m == 14) { alb = vec3(0.022, 0.017, 0.012); spec = 0.03; rough = 10.; }             // leather padding
   // damage: charred deck and hull, glowing where it burns
   vec3 emit = vec3(0.);
   for (int k = 0; k < 2; k++) {
@@ -424,7 +435,7 @@ void main() {
   if (kind < 0.5) {
     // smoke / cloud puff, lit by the sun from one side
     float d = texture(uPuffs, vUV).r;
-    float a = pow(d, 1.2) * vB.y * soft;
+    float a = min(1., pow(d, 1.2) * vB.y * soft);
     if (a < 0.003) discard;
     float side = 0.55 + 0.45 * dot(normalize(vec3(vLocal.x, vLocal.y, 0.3)), normalize(vec3(0.3, 0.8, 0.5)));
     vec3 col = vC.rgb * (uSunCol * 0.6 * side * vSh + uZenith * 0.8 + uHorizon * 0.25 + vLit * 0.8) + vec3(1.0, 0.42, 0.12) * vC.a * pow(d, 1.5);
@@ -438,7 +449,7 @@ void main() {
   } else if (kind < 2.5) {
     // solid debris
     float r = length(vLocal) * 2.;
-    float a = smoothstep(1., 0.6, r) * vB.y * soft;
+    float a = min(1., smoothstep(1., 0.6, r) * vB.y * soft);
     vec3 col = vC.rgb * (uSunCol * 0.5 + uZenith) + vC.rgb * vC.a * 3.;
     frag = vec4(col * a, a);
   } else {

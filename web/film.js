@@ -126,6 +126,26 @@ function burning(out, T, i, lp, t0, { rate = 0.14, life = 28, size = 14, rise = 
     out.push(p[0], p[1], p[2], 10 + hash(n) * 8, 0, flick(n) * heavy, 1, 0, 3.2, 1.3, 0.35, 0);
   }
 }
+// the aftermath, seen from far off: a burning carrier's smoke as a leaning column a kilometre high
+function pillar(out, T, i, lp, seed, { life = 260, rate = 0.42, heavy = 1 } = {}) {
+  const base = shipPoint(i, T, lp);
+  for (let a = 0; a < life; a += rate) {
+    const k = a * 13.7 + seed * 101;
+    const age = a + (T * 1.0) % rate;
+    if (age >= life) continue;
+    const rise = 7.5 * age * (1 - age / (life * 2.6)) + age * 0.6;
+    const spread = (hash(k + 2) - 0.5) * (18 + age * 2.4);
+    const p = add(base, [WIND[0] * age * 1.6 + spread, rise, WIND[2] * age * 1.6 + (hash(k + 3) - 0.5) * (18 + age * 2.4)]);
+    const sz = (38 + age * 2.1) * (0.6 + hash(k + 4) * 0.8);
+    const al = Math.min(1, Math.min(1, age * 0.6) * Math.pow(1 - age / life, 1.6) * 0.9 * heavy);
+    const hot = Math.max(0, 1 - age * 0.35);
+    out.push(p[0], p[1], p[2], sz, hash(k + 5) * 6, al, 0, Math.floor(hash(k + 6) * 16), 0.028 + hot * 0.3, 0.025 + hot * 0.13, 0.023 + hot * 0.04, hot * 2.5);
+  }
+  for (let n = 0; n < 5; n++) {
+    const q = shipPoint(i, T, [lp[0] + (hash(n + seed) - 0.5) * 30, lp[1] + 4, lp[2] + (hash(n + seed + 5) - 0.5) * 120]);
+    out.push(q[0], q[1], q[2], 26 + hash(n) * 12, 0, 0.8 * (0.7 + 0.3 * Math.sin(T * 9 + n * 3)), 1, 0, 3.4, 1.3, 0.35, 0);
+  }
+}
 function explosion(out, T, pos, t0, S = 1, seed = 0) {
   const age = T - t0;
   if (age < 0 || age > 9) return;
@@ -237,7 +257,7 @@ function crew(T, camRight) {
   const y = CARRIER.deckY;
   const alarm = T > TL.deck + 1.1;
   const list = [
-    [alarm ? CELLS.point : CELLS.look, [-4.6, y, -46.5], 1.0, f],
+    [alarm ? CELLS.point : CELLS.look, [-5.0, y, -49.5], 1.0, f],
     [alarm ? CELLS.shout : CELLS.stand, [-4.8, y, -58], 0.9, -f],
     [CELLS.crouch, [3.5, y, -63], 0.8, f],
     [alarm ? CELLS.run : CELLS.stand, [1.5 + (alarm ? (T - TL.deck - 1.1) * 2.5 : 0), y, -70], 0.85, f],
@@ -381,7 +401,17 @@ const SHOTS = [
     const at = add(add(eye, scl(dir, 30)), [sh[0] * 8, sh[1] * 8, sh[2] * 8]);
     return { plane: me, cam: { eye, at, up: [0, 1, 0], fov: lerp(52, 46, ss(TL.gunner, TL.end, T)), near: 0.05 }, own: 'exterior', fade: 1 - ss(TL.end - 0.8, TL.end + 0.4, T) };
   } },
-  { t: TL.end, name: 'end', fn: () => ({ black: true }) },
+  { t: TL.end, name: 'aftermath', fn: T => {
+    // minutes later, from far out on the horizon: three columns of smoke where the carriers were
+    const c = scl(add(add(shipState(AKAGI, TL.end).pos, shipState(KAGA, TL.end).pos), shipState(SORYU, TL.end).pos), 1 / 3);
+    const a = 318 * Math.PI / 180, dir = [Math.cos(a), 0, Math.sin(a)];
+    const k = ss(TL.end, TL.end + 12.5, T);
+    const eye = add(add(c, scl(dir, lerp(11000, 10400, k))), [0, lerp(38, 30, k), 0]);
+    const at = add(c, [0, 110, 0]);
+    return { cam: { eye, at, up: [0, 1, 0], fov: lerp(13, 12.2, k), near: 1 }, own: 'exterior', aftermath: true,
+      fade: ss(TL.end + 0.1, TL.end + 1.6, T) * (1 - ss(TL.end + 10.9, TL.end + 12.1, T)) };
+  } },
+  { t: TL.end + 12.1, name: 'end', fn: () => ({ black: true }) },
 ];
 export function shotAt(T) { let k = 0; while (k < SHOTS.length - 1 && T >= SHOTS[k + 1].t) k++; return SHOTS[k]; }
 
@@ -411,7 +441,12 @@ export function frame(T) {
   const VP = mul(perspective(d.cam.fov * Math.PI / 180, FW / FH, d.cam.near || 0.5, 400000), view.m);
   const lights = [];
   const wet = [];
-  if (!d.only && sh.name !== 'cruise') {
+  if (d.aftermath) {
+    pillar(parts, T, AKAGI, [0, CARRIER.deckY, 8], 1);
+    pillar(parts, T, KAGA, [0, CARRIER.deckY, -5], 2);
+    pillar(parts, T, SORYU, [0, CARRIER.deckY, 10], 3);
+  }
+  if (!d.only && sh.name !== 'cruise' && !d.aftermath) {
     burning(parts, T, KAGA, [2, CARRIER.deckY, 30], TL.kagaHit + 0.5, { seed: 1, size: 18 });
     burning(parts, T, KAGA, [-3, CARRIER.deckY, -45], TL.kagaHit + 2.5, { seed: 2, size: 18 });
     burning(parts, T, SORYU, [0, CARRIER.deckY, 10], TL.soryuHit + 0.5, { seed: 3, size: 20 });
@@ -436,6 +471,7 @@ export function frame(T) {
   let fog = 0, grey = 0;
   if (sh.name === 'scope2') fog = 0.08 + 0.95 * ss(TL.scope2 + 1.0, TL.over - 0.3, T);
   if (sh.name === 'scope1') fog = 0.04 * ss(TL.scope1 + 3, TL.deck, T);
+  if (d.aftermath) { post.sat = 0.72; post.exposure = 0.5; post.contrast = 1.08; post.gain = [1.0, 0.96, 0.92]; }
   if (sh.name === 'pullout') grey = 0.8 * ss(TL.release + 0.3, TL.release + 1.5, T) * (1 - 0.7 * ss(TL.release + 2.0, TL.gunner, T));
   return {
     view: { cam: d.cam, env, time: T, lights, ships: fl.wakes, splashes: wet, meshes, figures, particles: new Float32Array(parts), post },
@@ -476,9 +512,9 @@ function overlay(ctx, T, sh, d, VP) {
   spoken(ctx, 'RELEASE', null, fadeIO(T, TL.release, TL.release + 1.1, 0.08), { size: 64, y: FH - BAR - 90, color: '#ffe4c8' });
   caption(ctx, 'Akagi was hit by one bomb.', fadeIO(T, TL.hangar + 1.5, TL.hangar + 4.0, 0.4));
   caption(ctx, 'It went through the flight deck into the hangar, among the aircraft.', fadeIO(T, TL.hangar + 4.1, TL.end - 0.2, 0.4));
-  caption(ctx, 'In six minutes, three of Japan’s four carriers in the battle were burning.', fadeIO(T, TL.end + 0.4, TL.end + 3.9, 0.5), { y: FH / 2 + 10 });
-  caption(ctx, ['No fighters had stopped the dive bombers.', 'They were down at sea level, shooting down the torpedo planes that had attacked first.'], fadeIO(T, TL.end + 4.3, TL.end + 8.7, 0.5), { y: FH / 2 + 10 });
-  caption(ctx, 'Of 41 American torpedo bombers, 35 did not come back.', fadeIO(T, TL.end + 9.1, TL.end + 11.9, 0.5), { y: FH / 2 + 10 });
+  caption(ctx, 'In six minutes, three of Japan’s four carriers in the battle were burning.', fadeIO(T, TL.end + 1.2, TL.end + 4.4, 0.5), { size: 40 });
+  caption(ctx, ['No fighters had stopped the dive bombers.', 'They were down at sea level, shooting down the torpedo planes that had attacked first.'], fadeIO(T, TL.end + 4.3, TL.end + 8.7, 0.5), { size: 40 });
+  caption(ctx, 'Of 41 American torpedo bombers, 35 did not come back.', fadeIO(T, TL.end + 9.1, TL.end + 11.9, 0.5), { size: 40 });
   title(ctx, 'MIDWAY', '4 JUNE 1942  ·  10:22 A.M.', fadeIO(T, TL.end + 12.3, TOTAL + 1, 0.9));
 }
 

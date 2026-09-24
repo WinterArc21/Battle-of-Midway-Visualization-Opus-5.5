@@ -245,19 +245,63 @@ export function buildSBD({ withBomb = true, cockpit = false } = {}) {
   // wing centre section through the fuselage bottom
   g.box(-0.56, 0.56, SBD.hingeY0 - 0.12, SBD.hingeY0 + 0.2, te(0.3), le(0.3), 3);
   // tailplane and fin
-  const tp = (sd) => { const p = [[0, 0.45, -4.6], [sd * 3.0, 0.5, -5.2], [sd * 3.0, 0.5, -6.0], [0, 0.45, -6.2]]; if (sd > 0) { g.quad(p[0], p[1], p[2], p[3], 3); g.quad(p[3], p[2], p[1], p[0], 3); } else { g.quad(p[3], p[2], p[1], p[0], 3); g.quad(p[0], p[1], p[2], p[3], 3); } };
-  tp(1); tp(-1);
-  g.quad([0, 0.5, -4.4], [0, 2.2, -5.5], [0, 2.25, -6.1], [0, 0.4, -6.35], 3);
-  g.quad([0, 0.4, -6.35], [0, 2.25, -6.1], [0, 2.2, -5.5], [0, 0.5, -4.4], 3);
+  // tailplane and fin as thin airfoil slabs: leading edge, thickest at 30%, tapering to the hinge and trailing edge
+  const slab = (le0, te0, le1, te1, axis, t0, t1) => {
+    // le/te points at root (0) and tip (1); thickness offsets along `axis`
+    const mid = (a, b, u) => a.map((v, i) => v + (b[i] - v) * u);
+    const off = (p, t) => p.map((v, i) => v + axis[i] * t);
+    const secs = [0, 0.3, 0.72, 1.0], th = [0, 1, 0.55, 0.08];
+    const R = secs.map((u, k) => [off(mid(le0, te0, u), t0 * th[k]), off(mid(le0, te0, u), -t0 * th[k])]);
+    const T = secs.map((u, k) => [off(mid(le1, te1, u), t1 * th[k]), off(mid(le1, te1, u), -t1 * th[k])]);
+    for (let k = 0; k < 3; k++) {
+      g.quad(R[k][0], T[k][0], T[k + 1][0], R[k + 1][0], 3); g.quad(R[k + 1][0], T[k + 1][0], T[k][0], R[k][0], 3);
+      g.quad(R[k][1], R[k + 1][1], T[k + 1][1], T[k][1], 3); g.quad(T[k][1], T[k + 1][1], R[k + 1][1], R[k][1], 3);
+    }
+    g.quad(T[0][0], T[1][0], T[1][1], T[0][1], 3); g.quad(T[1][0], T[2][0], T[2][1], T[1][1], 3); g.quad(T[2][0], T[3][0], T[3][1], T[2][1], 3);
+  };
+  for (const sd of [-1, 1]) slab([0, 0.45, -4.6], [0, 0.45, -6.2], [sd * 3.0, 0.5, -5.2], [sd * 3.0, 0.5, -6.0], [0, 1, 0], 0.07, 0.025);
+  slab([0, 0.5, -4.4], [0, 0.4, -6.35], [0, 2.2, -5.5], [0, 2.25, -6.1], [1, 0, 0], 0.07, 0.025);
   // landing gear (retracted into wells — only the wheels show) and tail wheel
   g.tube([1.3, -0.72, 0.9], [1.3, -0.52, 0.9], 0.34, 0.34, 8, 10); g.tube([-1.3, -0.72, 0.9], [-1.3, -0.52, 0.9], 0.34, 0.34, 8, 10);
   // rear gunner's twin .30s
-  g.tube([0.08, 1.15, -2.3], [0.08, 1.25, -3.6], 0.035, 0.03, 2, 5); g.tube([-0.08, 1.15, -2.3], [-0.08, 1.25, -3.6], 0.035, 0.03, 2, 5);
-  g.box(-0.18, 0.18, 1.05, 1.25, -2.4, -2.1, 2);
+  {
+    // two M1919s on a flexible mount, pointing aft and a little up: receiver, perforated cooling jacket,
+    // barrel, flash hider, spade grips, ammunition cans and a ring sight
+    const o = [0, 1.14, -2.2], f = (() => { const v = [0, 0.085, -1]; const l = Math.hypot(...v); return v.map(x => x / l); })();
+    const at = (x, y, d) => [o[0] + x, o[1] + y + f[1] * d, o[2] + f[2] * d];
+    for (const gx of [-0.095, 0.095]) {
+      // receiver (a long box along the gun axis)
+      const R0 = at(gx, 0, 0.05), R1 = at(gx, 0, 0.42);
+      g.tube(R0, R1, 0.05, 0.05, 12, 6);
+      g.tube(at(gx, 0.035, 0.06), at(gx, 0.035, 0.4), 0.022, 0.022, 12, 6);
+      // spade grips and trigger
+      g.tube(at(gx, -0.02, 0.05), at(gx, -0.11, -0.04), 0.012, 0.012, 12, 6);
+      // cooling jacket with its rows of holes (rings), then the bare barrel and flash hider
+      g.tube(at(gx, 0, 0.42), at(gx, 0, 1.02), 0.029, 0.029, 13, 14, false);
+      for (let d = 0.46; d < 1.0; d += 0.06) g.tube(at(gx, 0, d), at(gx, 0, d + 0.012), 0.031, 0.031, 12, 12, false);
+      g.tube(at(gx, 0, 1.02), at(gx, 0, 1.3), 0.012, 0.011, 12, 8);
+      g.tube(at(gx, 0, 1.3), at(gx, 0, 1.38), 0.016, 0.024, 12, 10);
+      // ammunition can on the outboard side
+      const s = Math.sign(gx);
+      g.box(gx + s * 0.05, gx + s * 0.15, o[1] - 0.12, o[1] + 0.04, o[2] - 0.32, o[2] - 0.12, 10);
+    }
+    // cradle and pintle
+    g.tube(at(-0.1, -0.03, 0.2), at(0.1, -0.03, 0.2), 0.02, 0.02, 12, 8);
+    g.tube(at(0, -0.03, 0.2), [0, 0.95, -2.45], 0.03, 0.035, 12, 10);
+    // ring-and-bead sight
+    const sc = at(0, 0.13, 0.62);
+    for (let k = 0; k < 16; k++) {
+      const a0 = k / 16 * Math.PI * 2, a1 = (k + 1) / 16 * Math.PI * 2, rr = 0.075;
+      g.tube([sc[0] + Math.cos(a0) * rr, sc[1] + Math.sin(a0) * rr, sc[2]], [sc[0] + Math.cos(a1) * rr, sc[1] + Math.sin(a1) * rr, sc[2]], 0.004, 0.004, 12, 4, false);
+    }
+    g.tube(at(0, 0.03, 0.62), [sc[0], sc[1] - 0.075, sc[2]], 0.005, 0.005, 12, 4);
+    g.tube(at(0, 0.03, 1.0), at(0, 0.1, 1.0), 0.004, 0.004, 12, 4);
+  }
   if (cockpit) {
     // the inside of the cockpit, seen by the pilot: coaming, instrument panel, sides
     g.box(-0.5, 0.5, 0.5, 0.82, 0.8, 0.86, 8);                  // panel
     g.box(-0.46, 0.46, 0.82, 0.86, 0.8, 1.45, 8);               // coaming
+    g.tube([-0.46, 0.86, 0.8], [0.46, 0.86, 0.8], 0.022, 0.022, 14, 10); // padded lip
   }
   if (withBomb) g.append(buildBomb(), p => [p[0] + SBD.bomb[0], p[1] + SBD.bomb[1], p[2] + SBD.bomb[2]]);
   return g.arrays();

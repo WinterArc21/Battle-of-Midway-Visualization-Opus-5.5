@@ -14,7 +14,7 @@ function seg(x, a, b, wa, wb, col) {
 function poly(x, pts, col) { x.fillStyle = col; x.beginPath(); pts.forEach((p, i) => (i ? x.lineTo(p[0], p[1]) : x.moveTo(p[0], p[1]))); x.closePath(); x.fill(); }
 function ell(x, c, rx, ry, col) { x.fillStyle = col; x.beginPath(); x.ellipse(c[0], c[1], rx, ry, 0, 0, 7); x.fill(); }
 
-const WORK = [0.62, 0.6, 0.5], PILOT = [0.36, 0.26, 0.16], OFF = [0.12, 0.13, 0.17], SKIN = [0.74, 0.58, 0.44], BOOT = [0.05, 0.05, 0.05];
+const WORK = [0.5, 0.48, 0.4], PILOT = [0.36, 0.26, 0.16], OFF = [0.12, 0.13, 0.17], SKIN = [0.74, 0.58, 0.44], BOOT = [0.05, 0.05, 0.05];
 
 function figure(x, o) {
   const cloth = o.pilot ? PILOT : o.officer ? OFF : WORK;
@@ -54,7 +54,21 @@ export function buildPeople() {
   const draw = (i, o) => {
     x.save(); x.beginPath(); x.rect((i % 4) * 256, Math.floor(i / 4) * 256, 256, 256); x.clip();
     x.translate((i % 4) * 256 + 128, Math.floor(i / 4) * 256 + 250); x.scale(k, -k);
-    figure(x, o); x.restore();
+    figure(x, o);
+    // model the flat cut-out: shade the side away from the light and the legs, catch a rim of light on the front
+    x.globalCompositeOperation = 'source-atop';
+    const g1 = x.createLinearGradient(-0.3, 0, 0.3, 0);
+    g1.addColorStop(0, 'rgba(0,0,0,0.45)'); g1.addColorStop(0.55, 'rgba(0,0,0,0.05)'); g1.addColorStop(0.85, 'rgba(0,0,0,0)'); g1.addColorStop(1, 'rgba(255,236,210,0.18)');
+    x.fillStyle = g1; x.fillRect(-1.2, -0.2, 2.4, 2.8);
+    const g2 = x.createLinearGradient(0, 0, 0, 1.8);
+    g2.addColorStop(0, 'rgba(0,0,0,0.38)'); g2.addColorStop(0.5, 'rgba(0,0,0,0.12)'); g2.addColorStop(0.62, 'rgba(0,0,0,0)'); g2.addColorStop(1, 'rgba(0,0,0,0.1)');
+    x.fillStyle = g2; x.fillRect(-1.2, -0.2, 2.4, 2.8);
+    // belt and a few cloth folds
+    x.fillStyle = 'rgba(20,16,10,0.55)'; x.fillRect(-0.2, (o.crouch ? 0.55 : 0.95) - 0.01, 0.4, 0.05);
+    x.strokeStyle = 'rgba(0,0,0,0.18)'; x.lineWidth = 0.012;
+    for (let k = 0; k < 5; k++) { const yy = (o.crouch ? 0.6 : 1.0) + k * 0.08; x.beginPath(); x.moveTo(-0.1 + k * 0.02, yy); x.quadraticCurveTo(0, yy + 0.03, 0.1, yy - 0.01); x.stroke(); }
+    x.globalCompositeOperation = 'source-over';
+    x.restore();
   };
   draw(0, { arm: [0.1, 1.0], farArm: [0.05, 0.95] });
   draw(1, { arm: [0.45, 2.05], stance: true, farArm: [0.2, 1.2], lookUp: true, lean: -0.1 });

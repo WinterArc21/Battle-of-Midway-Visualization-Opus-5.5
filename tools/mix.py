@@ -325,6 +325,15 @@ tt = np.arange(int(6 * SR)) / SR
 music.add((np.sin(2 * np.pi * 36.7 * tt) * np.exp(-tt / 2.2)).astype(np.float32) + lp(noise(len(tt)), 120) * np.exp(-tt / 1.0).astype(np.float32) * 0.5, C["end"] + 12.3, 0.55)
 music.add(braam(26, 6, 0.8), C["end"] + 12.3, 0.4)
 
+# the aftermath, from far off: wind over the water, and the dull thud of secondary explosions carried across the sea
+AFT = shot_mask({"aftermath"}, 1.2)
+gust = (0.65 + 0.35 * np.sin(2 * np.pi * 0.11 * t_all) * np.sin(2 * np.pi * 0.037 * t_all + 1.0)).astype(np.float32)
+sfx.stereo(lp(hp(noise(N), 60), 700) * gust * AFT, lp(hp(noise(N), 60), 700) * gust * AFT, 0.035)
+for dt, g, pan in [(3.4, 0.55, -0.1), (7.9, 0.4, 0.35), (10.4, 0.3, -0.4)]:
+    n = int(3.5 * SR); tt = np.arange(n) / SR
+    boom = lp(noise(n), 110) * np.exp(-tt / 0.8).astype(np.float32) * 1.4 + (np.sin(2 * np.pi * 29 * tt) * np.exp(-tt / 1.4)).astype(np.float32) * 0.7
+    sfx.add(boom.astype(np.float32), C["end"] + dt, g, pan)
+
 # ---------------- mix ----------------
 irA, irB = ir(2.5, 0.6, 5000, 1), ir(2.5, 0.6, 5000, 2)
 def verb(b, amt): return np.stack([b.L + fftconv(b.L, irA) * amt, b.R + fftconv(b.R, irB) * amt])
