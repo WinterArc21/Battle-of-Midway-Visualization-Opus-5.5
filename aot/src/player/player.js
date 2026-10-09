@@ -386,6 +386,14 @@ export class Player {
     if (this.grabbedBy) { this._followHand(); return; }
     if (this.riding) {
       const h = this.riding;
+      if (h.crashed > 0) {   // ran into a trunk or wall at a gallop: thrown over its head
+        const sp = h.crashed; h.crashed = 0;
+        this._leapOff(5);
+        this.vel.addScaledVector(this._heading(_e), sp * 0.6);
+        this.hurt(Math.max(0, sp - 10) * 0.02, 'impact');
+        this.cam.trauma = Math.min(1, this.cam.trauma + 0.5);
+        return;
+      }
       h.saddle(this.pos); this.vel.copy(h.vel);
       this.grounded = true; this.groundTime = 0; this.airTime = 0;
       this.yaw += Math.atan2(Math.sin(h.yaw - this.yaw), Math.cos(h.yaw - this.yaw)) * Math.min(1, dt * 4);
@@ -768,6 +776,13 @@ export class Player {
       if (this.model.root) this.model.root.visible = this.alive || !!this.grabbedBy;
     }
 
+    // a wire snapping taut: feel it
+    if (this.odm.snap > 0) {
+      const k = Math.min(1, this.odm.snap / 25);
+      this.cam.trauma = Math.min(1, this.cam.trauma + 0.15 + k * 0.25);
+      game.audio?.impact?.(k * 0.5);
+      this.odm.snap = 0;
+    }
     // landing dust
     if (this._landT > 0) {
       const s = this._landT; this._landT = 0;

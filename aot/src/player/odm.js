@@ -177,7 +177,12 @@ export class OdmGear {
         _d.multiplyScalar(1 / dist);
         pos.copy(h.anchor).addScaledVector(_d, h.length);
         const vo = vel.dot(_d) - h._keep;
-        if (vo > 0) vel.addScaledVector(_d, -vo);
+        if (vo > 0) {
+          // a slack wire snapping taut stretches a little and kicks back (the steel wire's spring)
+          const e = vo > CFG.wire.snapSpeed ? CFG.wire.rebound : 0;
+          vel.addScaledVector(_d, -vo * (1 + e));
+          if (vo > CFG.wire.snapSpeed) this.snap = Math.max(this.snap || 0, vo);
+        }
       }
     }
     for (const h of this.hooks) {
@@ -203,7 +208,10 @@ export class OdmGear {
       const w = this.wires[i];
       if (h.state === 'idle') { w.mesh.visible = false; continue; }
       const wobble = h.state === 'flying' ? 0.6 : h.state === 'retracting' ? 1.2 : 0;
-      w.update(origins[i], h.tip, camera, wobble, time + i * 1.7);
+      // a slack wire hangs: sag grows with the slack (√(slack·length), a shallow catenary)
+      let sag = 0;
+      if (h.attached) { const slack = h.length - origins[i].distanceTo(h.anchor); if (slack > 0.05) sag = Math.min(6, Math.sqrt(slack * h.length) * 0.45); }
+      w.update(origins[i], h.tip, camera, wobble, time + i * 1.7, sag);
     }
   }
 }
@@ -225,7 +233,7 @@ class Wire {
     scene.add(this.mesh);
     this._a = new THREE.Vector3(); this._p = new THREE.Vector3(); this._s = new THREE.Vector3(); this._side = new THREE.Vector3(); this._perp = new THREE.Vector3();
   }
-  update(a, b, camera, wobble, time) {
+  update(a, b, camera, wobble, time, sag = 0) {
     this.mesh.visible = true;
     const dir = this._a.subVectors(b, a);
     const len = dir.length() || 1e-4;
@@ -236,6 +244,7 @@ class Wire {
     for (let i = 0; i <= this.N; i++) {
       const t = i / this.N;
       const p = this._p.copy(a).addScaledVector(dir, len * t);
+      if (sag > 0) p.y -= 4 * t * (1 - t) * sag;
       if (wobble > 0) {
         const env = Math.sin(Math.PI * t) * Math.min(1.5, len * 0.02) * wobble;
         p.addScaledVector(perp, Math.sin(t * 9 - time * 40) * env * 0.35);

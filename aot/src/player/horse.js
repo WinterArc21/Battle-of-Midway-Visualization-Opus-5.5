@@ -92,7 +92,10 @@ export class Horse {
     for (const c of col.collideSphere(_v, 1.0, { dynamic: false })) {
       if (c.collider.type === 'ground' || c.depth <= 0) continue;
       this.pos.x += c.normal.x * c.depth; this.pos.z += c.normal.z * c.depth;
-      if (this.speed > 6) this.speed *= 0.9;
+      // a head-on crash at a gallop throws the rider; a glancing one just slows the horse
+      const head = -(c.normal.x * Math.sin(this.yaw) + c.normal.z * Math.cos(this.yaw));
+      if (this.rider && head > 0.7 && this.speed > 12) this.crashed = this.speed;
+      if (this.speed > 6) this.speed *= head > 0.7 ? 0.3 : 0.9;
     }
     this.pos.y = col.groundHeight(this.pos.x, this.pos.z);
     this.pos.x = THREE.MathUtils.clamp(this.pos.x, -1050, 1050);

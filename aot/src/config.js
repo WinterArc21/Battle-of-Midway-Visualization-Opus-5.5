@@ -31,6 +31,7 @@ export const CFG = {
   air: { control: 7, pump: 10 },
   ground: { run: 11, accel: 80, skid: 22, jump: 7.8, coyote: 0.12 },
   impact: { safe: 30, dmg: 0.022, stun: 48 },
+  wire: { snapSpeed: 7, rebound: 0.08 },   // a wire snapping taut faster than this kicks back a little
   modelLift: 0.4,           // the model's body centre sits this far above the collision sphere's centre
   horse: { mountRadius: 2.6, maxMountSpeed: 24, leap: 9.5, ropeLeap: 5, leapForward: 2 },
   keys: {
