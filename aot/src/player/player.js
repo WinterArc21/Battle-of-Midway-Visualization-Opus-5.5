@@ -772,7 +772,16 @@ export class Player {
     const speed = this.speed;
     // keyboard camera: in the air the heading eases toward where you are flying (so after whipping round a
     // trunk the view comes with you); the pitch follows the flight path. Mouse look suspends both for a moment.
-    if (this.mouseT > 1.5 && !this.grabbedBy) {
+    const nwCam = this.swooping && this.prey?.alive ? this.prey.napeWorld?.() : null;
+    if (this.mouseT > 1.5 && !this.grabbedBy && nwCam?.center) {
+      // swooping on a titan: frame its nape (lock-on), so you see the cut coming
+      const dx = nwCam.center.x - this.render.x, dz = nwCam.center.z - this.render.z;
+      let dy = Math.atan2(dx, dz) - this.yaw;
+      dy = Math.atan2(Math.sin(dy), Math.cos(dy));
+      this.yaw += dy * damp(3.2, dt);
+      const el = Math.atan2(nwCam.center.y - this.render.y, Math.hypot(dx, dz));
+      this.pitch += (THREE.MathUtils.clamp(el * 0.7, -0.6, 0.45) - this.pitch) * damp(3, dt);
+    } else if (this.mouseT > 1.5 && !this.grabbedBy) {
       const v = this.vel, hs = Math.hypot(v.x, v.z);
       if (!this.grounded && hs > 7 && !this.turn) {
         let dy = Math.atan2(v.x, v.z) - this.yaw;

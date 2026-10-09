@@ -49,9 +49,25 @@ game = {
   world,                           // result of buildWorld(game) (src/world/world.js)
   events,                          // { on(name, fn), off(name, fn), emit(name, payload) }
   time,                            // seconds since start (game time)
-  mode,                            // 'menu' | 'expedition' | 'free'
+  mode,                            // 'menu' | 'expedition' | 'training' | 'free'
+  training, trainingActive,        // TrainingCourse (src/titans/dummies.js) and whether it is live
+  targetList(),                    // every cuttable thing: live titans + (in training) dummies
+  hitTest(center, radius),         // merged hit test over titans and dummies: [{ titan, part, point }]
+  allies,                          // AI comrades (src/player/ally.js) on the same ODM physics
+  flow,                            // Game (src/game.js): modes, waves, tutorial hints, timers
+  hitstop, slowmo,                 // seconds of kill freeze-frame / slow motion
 }
 ```
+
+Controls (keyboard first; `src/player/player.js` `handleInput`): ← → turn (swing on a rope), ↑ / ↓ run / brake
+(↓ on a rope pays the wire out), Z / X hold the left / right rope at its auto-target (`player.targets[0|1]`,
+rescanned one side per frame by `Player._scan`), Shift gas (tap on the ground = jump), Space cut (primed while
+swooping), Esc / P pause, H controls card, M mute. WASD mirror the arrows; the mouse is optional.
+
+Cuttable things share one duck type: `{ kind, alive, height, position, velocity?, root, napeWorld(),
+applyHit({ part, damage, point, dir }), anchors?(out[]) -> Vector3[], threat? (0..1) }`. Their colliders carry
+`userData.titan` (dummies also `userData.dummy`), which is how ropes know they are on a titan (no arrival
+brake, the nape swoop, other ropes go slack).
 
 ## CollisionWorld — `src/core/collision.js` (owner: core)
 
@@ -183,11 +199,28 @@ export class Hud {
   constructor(game)                // DOM overlay above the canvas
   update(s)  // s: { gas 0..1, blade 0..1, bladesSpare int (pairs), hp 0..1, kills, score, speed m/s, combo,
              //      hooks: [{ state: 'idle'|'flying'|'attached' }, {..}], aim: { valid: bool, distance, lockTitan: bool },
-             //      napeMarkers: [{ x, y, visible }] (screen px), objective: string }
+             //      napeMarkers: [{ x, y, visible }] (screen px), objective: string,
+             //      hookTargets: [{ x, y, visible, valid, attached }] ×2 (Z, X markers),
+             //      hint: null | { keys: [...], text }, threats: [{ x, y, angle, danger }],
+             //      timer: seconds | null, targets: null | { left, total }, controlsCard: bool,
+             //      grabbed: bool, struggle: 0..1 }
   damageNumber(value, screenX, screenY, kill)   // big AoTTG style numbers
   message(text, seconds = 2.5, style = 'info'|'warn'|'big')
-  showMenu(onStart(mode)), hideMenu(), showDeath(stats, onRetry), showPause(onResume)
+  showMenu(onStart(mode)), hideMenu(), showDeath(stats, onRetry, onMenu?), hideDeath(),
+  showPause(onResume), hidePause(), showTrainingResult(stats, onRetry, onMenu), hideTrainingResult()
 }
+```
+
+## Training Grounds — `src/titans/dummies.js`
+
+```js
+export class TrainingCourse {
+  constructor(game); start(); stop(); update(dt)
+  titans: Dummy[]                  // cuttable duck type (kind 'dummy'); pulley dummies have dynamic colliders
+  hitTest(center, radius) -> [{ titan: dummy, part: 'nape' | 'body', point }]
+  remaining, total, spawn: { position, yaw }
+}
+// emits 'training:cut' { dummy, damage, point }
 ```
 
 ## Ownership
