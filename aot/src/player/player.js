@@ -31,6 +31,7 @@ export class Player {
     this._anchorTmp = [];
     this._origins = [new THREE.Vector3(), new THREE.Vector3()];
     this._modelPos = new THREE.Vector3();
+    this._released = [0, 1].map(() => ({ p: new THREE.Vector3(), t: 0 }));
     this.reset(new THREE.Vector3(0, 50.6, 0), 0);
   }
 
@@ -116,6 +117,11 @@ export class Player {
       if (fireR) this._fire(1, wantL);
     }
     const wasAnchored = anchored;
+    for (let i = 0; i < 2; i++) {
+      const want = i ? wantR : wantL, h = this.odm.hooks[i];
+      if (!want && h.attached) { this._released[i].p.copy(h.anchor); this._released[i].t = 1.5; }
+      this._released[i].t -= dt;
+    }
     if (!wantL) this.odm.release(0);
     if (!wantR) this.odm.release(1);
     // letting go at speed flicks you up a little: the anime's release-and-fly
@@ -224,8 +230,13 @@ export class Player {
     const wantY = p.y + (p.y - gy > 80 ? -10 : this.grounded ? 16 : 12 + THREE.MathUtils.clamp(-v.y * 0.3, -6, 10));
     const cands = this._cands || (this._cands = []);
     let n = 0;
+    // lead: the anchor lands ~0.2 s from now, so judge candidates from where you'll be
+    const lx = p.x + v.x * 0.2, ly = p.y + v.y * 0.2, lz = p.z + v.z * 0.2;
+    const sp = v.length(), flying = !this.grounded && sp > 10;
+    const other = this.odm.hooks[1 - side];
+    const rel = this._released[side];
     const push = (x, y, z, c, titan) => {
-      const dx = x - p.x, dy = y - p.y, dz = z - p.z;
+      const dx = x - lx, dy = y - ly, dz = z - lz;
       const d = Math.hypot(dx, dy, dz);
       if (d < (titan ? 2.5 : 7) || d > range) return;
       const dl = Math.hypot(dx, dz) || 1e-6;
@@ -237,6 +248,20 @@ export class Player {
       let score = sd + sh * 1.2 + (ahead + 1) * 0.8 + THREE.MathUtils.clamp(lateral, titan ? 0 : -0.6, 0.6) * 1.3;
       // titans (and training dummies) are the point: within reach and roughly ahead they win outright
       if (titan) score += 1.6 + (ahead > 0.5 ? 0.4 : 0);
+      if (flying && !titan) {
+        // swing quality: the best rope makes ~40-75° with your velocity, from an anchor above you, so the arc
+        // carries you forward and up; a rope dead along your velocity is a collision course
+        const cosv = (dx * v.x + dy * v.y + dz * v.z) / (d * sp);
+        score += (1 - Math.min(1, Math.abs(cosv - 0.5) / 0.6)) * 0.9;
+        if (cosv > 0.92 && d < sp * 1.2) score -= 0.8;
+        // the lowest point of the swing must clear the ground
+        const lowest = y - d;
+        if (lowest < col.groundHeight(x, z) + 2) score -= 0.5;
+      }
+      // chaining: with the other rope anchored, this one reaches for the next anchor, not the same one
+      if (other.attached && (x - other.anchor.x) ** 2 + (y - other.anchor.y) ** 2 + (z - other.anchor.z) ** 2 < 100) score -= 0.9;
+      // don't grab the anchor you just let go of
+      if (rel.t > 0 && (x - rel.p.x) ** 2 + (z - rel.p.z) ** 2 < 64) score -= 1.2;
       if (T.valid && (x - T.point.x) ** 2 + (y - T.point.y) ** 2 + (z - T.point.z) ** 2 < 25) score += 0.35;
       let o = cands[n];
       if (!o) o = cands[n] = { p: new THREE.Vector3(), c: null, t: null, s: 0 };
