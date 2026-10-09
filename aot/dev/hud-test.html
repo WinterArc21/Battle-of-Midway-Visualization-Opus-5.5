@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HUD test</title>
+<style>
+  html,body{margin:0;height:100%;background:#0b1118;overflow:hidden}
+  /* stand-in for the 3D scene: sky, distant ridge, field */
+  #stage{position:fixed;inset:0;
+    background:
+      radial-gradient(ellipse at 62% 18%,rgba(255,230,170,.55) 0,rgba(255,230,170,0) 26%),
+      linear-gradient(180deg,#5d7d97 0%,#9bb3bf 46%,#5b6e4a 60%,#2c3a25 100%)}
+  #stage::after{content:"";position:absolute;left:-10%;right:-10%;top:52%;height:14%;
+    background:linear-gradient(180deg,#3a4d3c,#22301f);border-radius:50% 50% 0 0/100% 100% 0 0;opacity:.8}
+  #dev{position:fixed;top:8px;right:8px;z-index:50;display:flex;flex-wrap:wrap;gap:5px;justify-content:flex-end;max-width:60vw}
+  #dev button{font:12px/1 system-ui,sans-serif;background:#1d1d1d;color:#ddd;border:1px solid #555;padding:5px 8px;border-radius:3px;cursor:pointer;opacity:.85}
+  #dev button.on{border-color:#c9a25a;color:#f3d28a}
+  #dev button:hover{opacity:1}
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="dev">
+  <button data-go="menu">#menu</button>
+  <button data-go="hud">#hud</button>
+  <button data-go="big">#big</button>
+  <button data-go="death">#death</button>
+  <button data-go="pause">#pause</button>
+</div>
+
+<script type="module">
+import { Hud } from '../src/ui/hud.js';
+
+// Fake game object: the HUD only needs it to exist; state is pushed through update(s).
+const game = { mode: 'expedition', time: 0, events: { on() {}, off() {}, emit() {} } };
+const hud = new Hud(game);
+
+const STATES = ['menu', 'hud', 'big', 'death', 'pause'];
+const buttons = [...document.querySelectorAll('#dev button')];
+const st = { gas: 1, blade: 0.8, spare: 4, hp: 1, kills: 0, score: 0, combo: 1 };
+let state = 'menu';
+let t = 0;
+let lastDmg = 0;
+let dmgIndex = 0;
+let started = false;
+
+function pick(hash) {
+  const h = STATES.includes(hash) ? hash : 'menu';
+  state = h;
+  buttons.forEach((b) => b.classList.toggle('on', b.dataset.go === h));
+  if (h !== 'menu') hud.hideMenu();
+  switch (h) {
+    case 'menu':
+      hud.showMenu((mode) => {
+        hud.hideMenu();
+        hud.message('Started: ' + mode, 2, 'info');
+        state = 'hud';
+        buttons.forEach((b) => b.classList.toggle('on', b.dataset.go === 'hud'));
+        history.replaceState(null, '', '#hud');
+      });
+      break;
+    case 'hud':
+      hud.hideDeath();
+      hud.hidePause();
+      hud.message('Titan spotted: 42 m, the field', 3, 'info');
+      break;
+    case 'big':
+      hud.hideDeath();
+      hud.hidePause();
+      hud.message('THE COLOSSAL TITAN HAS APPEARED', 4, 'big');
+      break;
+    case 'death':
+      hud.hidePause();
+      hud.showDeath({ cause: 'YOU WERE EATEN', kills: 7, score: 4120, time: 152 }, () => {
+        hud.message('Back on the wall', 2, 'info');
+        pick('hud');
+        history.replaceState(null, '', '#hud');
+      });
+      break;
+    case 'pause':
+      hud.hideDeath();
+      hud.showPause(() => {
+        hud.message('Resumed', 1.5, 'info');
+        pick('hud');
+        history.replaceState(null, '', '#hud');
+      });
+      break;
+  }
+}
+
+buttons.forEach((b) => b.addEventListener('click', () => {
+  history.replaceState(null, '', '#' + b.dataset.go);
+  pick(b.dataset.go);
+}));
+window.addEventListener('hashchange', () => pick(location.hash.slice(1)));
+
+function frame(now) {
+  requestAnimationFrame(frame);
+  const dt = Math.min(0.05, 1 / 60);
+  t += dt;
+
+  // gas drains from full to empty over 12 s, then refills (passes amber, red and pulse)
+  st.gas = 1 - ((t % 12) / 12);
+  st.hp = 0.25 + 0.75 * Math.abs(Math.sin(t * 0.2));
+  st.speed = 22 + 18 * (1 + Math.sin(t * 0.7));                  // m/s, 22..58 => 79..209 km/h
+  st.combo = 1 + (Math.floor(t / 3.5) % 5);                       // 1..5, pops when it rises
+  if (Math.floor(t * 1.4) !== Math.floor((t - dt) * 1.4)) st.kills += 1;
+  st.score += Math.round(dt * 260);
+  st.blade = Math.max(0.05, 0.8 - (t % 20) / 25);
+  st.spare = 4 - Math.floor((t % 20) / 5);
+
+  const cycle = Math.floor(t / 1.5) % 4;
+  const hooks = [
+    { state: cycle === 0 ? 'flying' : cycle === 1 ? 'attached' : 'idle' },
+    { state: cycle === 2 ? 'flying' : cycle === 3 ? 'attached' : 'idle' },
+  ];
+  const aimCycle = Math.floor(t / 2.5) % 3;
+  const aim = aimCycle === 0
+    ? { valid: true, distance: 42 + 8 * Math.sin(t), lockTitan: false }
+    : aimCycle === 1
+      ? { valid: false, distance: 0, lockTitan: false }
+      : { valid: true, distance: 14.6, lockTitan: true };
+
+  const cx = innerWidth / 2, cy = innerHeight / 2;
+  const napeMarkers = [
+    { x: cx + 230 * Math.cos(t * 0.6), y: cy - 90 + 40 * Math.sin(t * 0.9), visible: Math.sin(t) > -0.3 },
+    { x: cx - 180, y: cy + 60 + 14 * Math.sin(t * 1.7), visible: true },
+  ];
+
+  hud.update({
+    gas: st.gas, blade: st.blade, bladesSpare: st.spare, hp: st.hp,
+    kills: st.kills, score: st.score, speed: st.speed, combo: st.combo,
+    hooks, aim, napeMarkers,
+    objective: 'Kill the titans  |  Colossal Titan in the town',
+  });
+
+  if (started && t - lastDmg > 0.7) {
+    lastDmg = t;
+    dmgIndex++;
+    const kill = dmgIndex % 4 === 0;
+    const x = cx + (Math.sin(dmgIndex * 2.3) * 0.35) * innerWidth;
+    const y = cy - 40 + (Math.cos(dmgIndex * 1.7) * 0.25) * innerHeight;
+    hud.damageNumber(kill ? 320 + dmgIndex * 7 : 40 + (dmgIndex * 13) % 90, x, y, kill);
+  }
+  if (state === 'hud' && t > 4 && !window.__warned) {
+    window.__warned = true;
+    hud.message('Blades nearly broken: swap with R', 2.5, 'warn');
+  }
+}
+
+started = true;
+pick(location.hash.slice(1));
+requestAnimationFrame(frame);
+window.hud = hud;
+</script>
+</body>
+</html>
