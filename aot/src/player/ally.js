@@ -1,0 +1,139 @@
+// Survey Corps comrades: AI soldiers flying on the same ODM physics as the player (same wires, winch,
+// constraints and contacts), hopping anchor to anchor through the trees and circling titans.
+import * as THREE from 'three';
+import { CFG } from '../config.js';
+import { OdmGear } from './odm.js';
+
+const UP = new THREE.Vector3(0, 1, 0);
+const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _c = new THREE.Vector3();
+
+export class Ally {
+  constructor(game, model, start, seed) {
+    this.game = game;
+    this.pos = start.clone();
+    this.prev = start.clone();
+    this.render = start.clone();
+    this.vel = new THREE.Vector3(0, 0, 0);
+    this.infiniteGas = true;
+    this.silent = true;
+    this.odm = new OdmGear(game, this);
+    this.model = model;
+    this.heading = new THREE.Vector3(Math.sin(seed), 0, Math.cos(seed));
+    this.forward = this.heading.clone();
+    this.up = new THREE.Vector3(0, 1, 0);
+    this.t = seed * 3;
+    this.holdT = 0; this.nextT = 0.3 + (seed % 1);
+    this.rand = mulberry(Math.floor(seed * 1000) + 7);
+    this._origins = [new THREE.Vector3(), new THREE.Vector3()];
+    this.boost = 0;
+  }
+
+  _pickAnchor() {
+    const col = this.game.collision;
+    const r = this.rand;
+    // prefer a titan's body if one is near (Survey Corps harass the big ones), else trees ahead and above
+    const titans = this.game.titans?.titans || [];
+    let target = null;
+    for (const t of titans) {
+      if (!t.alive || t.kind === 'colossal') continue;
+      const d = t.position.distanceTo(this.pos);
+      if (d < 70 && r() < 0.5) { target = t.napeWorld?.()?.center; break; }
+    }
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const dir = _a;
+      if (target && attempt === 0) dir.subVectors(target, this.pos).normalize();
+      else {
+        const yaw = Math.atan2(this.heading.x, this.heading.z) + (r() - 0.5) * 1.6;
+        const pitch = 0.15 + r() * 0.45 + (this.pos.y < 20 ? 0.3 : 0) - (this.pos.y > 85 ? 0.4 : 0);
+        dir.set(Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), Math.cos(yaw) * Math.cos(pitch));
+      }
+      const hit = col.raycast(this.pos, dir, CFG.hook.range * 0.85, { hookableOnly: true });
+      if (hit && hit.distance > 12 && hit.collider.type !== 'ground') return hit.point;
+    }
+    return null;
+  }
+
+  fixedUpdate(dt) {
+    this.prev.copy(this.pos);
+    const odm = this.odm, v = this.vel, p = this.pos;
+    this.launcher(0, this._origins[0]); this.launcher(1, this._origins[1]);
+    odm.step(dt, this._origins);
+    this.t += dt;
+    this.holdT -= dt;
+    this.nextT -= dt;
+    const anchored = odm.attachedCount();
+    if (anchored && this.holdT <= 0) odm.releaseAll(true);
+    if (!anchored && this.nextT <= 0 && odm.hooks.every((h) => h.state === 'idle' || h.state === 'retracting')) {
+      const pt = this._pickAnchor();
+      if (pt) {
+        const twin = this.rand() < 0.5;
+        odm.fire(0, p, pt, _b.subVectors(pt, p).normalize());
+        if (twin) odm.fire(1, p, pt.clone().add(_c.set(this.rand() - 0.5, 0, this.rand() - 0.5).multiplyScalar(3)), _b);
+        this.holdT = 0.9 + this.rand() * 1.1;
+        this.boost = this.rand() < 0.4 ? 0.7 : 0;
+      }
+      this.nextT = 0.5 + this.rand() * 0.6;
+    }
+    const acc = _a.set(0, -CFG.gravity, 0);
+    const sp = v.length();
+    acc.addScaledVector(v, -CFG.drag * sp);
+    odm.reelAccel(p, v, this.boost > 0, acc);
+    if (this.boost > 0) this.boost -= dt;
+    // stay in the playable air: a bit of gas when low, steer back toward the action area
+    if (p.y < 8 && v.y < 4) acc.y += 30;
+    const home = _b.set(-p.x, 0, 260 - p.z);
+    if (home.length() > 380) acc.addScaledVector(home.normalize(), 8);
+    v.addScaledVector(acc, dt);
+    const n = Math.min(10, Math.max(1, Math.ceil((v.length() * dt) / 0.35)));
+    for (let i = 0; i < n; i++) {
+      p.addScaledVector(v, dt / n);
+      odm.constrain(p, v);
+      const cs = this.game.collision.collideSphere(p, CFG.radius, { dynamic: false });
+      for (const c of cs) {
+        if (c.depth <= 0) continue;
+        p.addScaledVector(c.normal, c.depth);
+        const vn = v.dot(c.normal);
+        if (vn < 0) v.addScaledVector(c.normal, -vn * 1.2);
+      }
+    }
+    if (v.lengthSq() > 4) this.heading.lerp(_c.set(v.x, 0, v.z).normalize(), 0.02).normalize();
+  }
+
+  launcher(side, out) {
+    if (this.model?.hookOrigin && this.model.root?.visible) return this.model.hookOrigin(side, out);
+    return out.copy(this.render);
+  }
+
+  update(dt, alpha) {
+    this.render.lerpVectors(this.prev, this.pos, alpha);
+    const sp = this.vel.length();
+    if (sp > 2) this.forward.lerp(_a.copy(this.vel).multiplyScalar(1 / sp).addScaledVector(this.heading, 0.4).normalize(), 1 - Math.exp(-6 * dt)).normalize();
+    const pd = this.odm.pullDir(this.render, _b);
+    const upT = _c.copy(UP);
+    if (pd) upT.lerp(pd, 0.5);
+    upT.addScaledVector(this.forward, -upT.dot(this.forward));
+    if (upT.lengthSq() > 1e-3) this.up.lerp(upT.normalize(), 1 - Math.exp(-5 * dt)).normalize();
+    const dist = this.render.distanceTo(this.game.camera.position);
+    const visible = dist < 260;
+    if (this.model) {
+      this.model.root.visible = visible;
+      if (visible) this.model.update(dt, {
+        position: this.render, velocity: this.vel, forward: this.forward, up: this.up, grounded: false, running: 0,
+        hooks: this.odm.hooks.map((h) => ({ attached: h.attached, anchor: h.attached ? h.anchor : null, state: h.state })),
+        boosting: this.boost > 0 ? 1 : 0, slash: -1, spin: false, grabbed: false, blades: true, speed: sp, alive: true,
+      });
+    }
+    this.launcher(0, this._origins[0]); this.launcher(1, this._origins[1]);
+    this.odm.render(this._origins, this.game.camera, this.game.time + this.t);
+    if (this.boost > 0 && visible && this.model?.gasNozzle) { this.model.gasNozzle(_a, _b); this.game.fx?.gas?.(_a, _b, 0.5); }
+  }
+
+  dispose() {
+    this.model?.root?.parent?.remove(this.model.root);
+    for (const w of this.odm.wires) w.mesh.parent?.remove(w.mesh);
+  }
+}
+
+function mulberry(a) {
+  return () => { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+}

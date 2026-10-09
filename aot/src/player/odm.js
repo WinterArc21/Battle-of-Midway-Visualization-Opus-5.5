@@ -44,14 +44,14 @@ export class OdmGear {
     const h = this.hooks[side];
     if (h.state === 'flying' || h.state === 'attached') return false;
     if (this.player.infiniteGas !== true) {
-      if (this.gas <= 0) { this.game.audio?.hookMiss?.(); return false; }
+      if (this.gas <= 0) { this.player.silent || this.game.audio?.hookMiss?.(); return false; }
       this.gas = Math.max(0, this.gas - CFG.gas.fireCost);
     }
     h.state = 'flying';
     h.tip.copy(origin);
     if (target) h.dir.subVectors(target, origin).normalize(); else h.dir.copy(fallbackDir);
     h.travelled = 0; h.age = 0; h.collider = null;
-    this.game.audio?.hookFire?.(side);
+    if (!this.player.silent) this.game.audio?.hookFire?.(side);
     return true;
   }
 
@@ -60,7 +60,7 @@ export class OdmGear {
     if (h.state === 'flying' || h.state === 'attached') {
       h.state = 'retracting';
       h.collider = null;
-      if (!silent) this.game.audio?.hookRetract?.(side);
+      if (!silent && !this.player.silent) this.game.audio?.hookRetract?.(side);
     }
   }
   releaseAll(silent) { this.release(0, silent); this.release(1, silent); }
@@ -83,13 +83,13 @@ export class OdmGear {
           if (hit.collider.dynamic) col.toLocal(hit.collider, hit.point, h.local);
           h.length = Math.max(CFG.hook.minLen, h.anchor.distanceTo(this.player.pos));
           h.tip.copy(hit.point);
-          this.game.audio?.hookHit?.(hit.collider.material);
+          if (!this.player.silent) this.game.audio?.hookHit?.(hit.collider.material);
           this.game.fx?.impact?.(hit.point, hit.normal, hit.collider.material);
           this.game.events.emit('hook:attach', { hook: h, hit });
         } else {
           h.tip.addScaledVector(h.dir, step);
           h.travelled += step;
-          if (h.travelled > CFG.hook.range) { h.state = 'retracting'; this.game.audio?.hookMiss?.(); }
+          if (h.travelled > CFG.hook.range) { h.state = 'retracting'; if (!this.player.silent) this.game.audio?.hookMiss?.(); }
         }
       } else if (h.state === 'attached') {
         const c = h.collider;

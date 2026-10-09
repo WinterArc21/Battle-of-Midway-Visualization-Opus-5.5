@@ -6,7 +6,7 @@ import { OdmGear } from './odm.js';
 
 const UP = new THREE.Vector3(0, 1, 0);
 const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _c = new THREE.Vector3(), _d = new THREE.Vector3();
-const _e = new THREE.Vector3(), _q = new THREE.Quaternion(), _m = new THREE.Matrix4();
+const _e = new THREE.Vector3(), _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion();
 const damp = (k, dt) => 1 - Math.exp(-k * dt);
 
 export class Player {
@@ -395,6 +395,8 @@ export class Player {
     this.game.events.emit('player:escaped', {});
   }
   _release() { this.grabbedBy = null; this.grabHand = null; this.grabImmune = 1.6; }
+  /** Called by a titan that lets go (blinded, arm severed, killed while holding us). */
+  release() { if (this.grabbedBy) { this._release(); this.vel.set(0, 4, 0); } }
   eaten(titan) {
     if (!this.alive) return;
     this._release();
@@ -538,6 +540,10 @@ export class Player {
       if (d < bestD) { bestD = d; bestNape = nw.center; }
     }
     if (bestNape) center.copy(bestNape);
+    if (this.game.fx?.slashArc && (!spin || Math.random() < 0.5)) {
+      _q.copy(this.game.camera.quaternion).multiply(_q2.setFromAxisAngle(_a.set(0, 0, 1), (Math.random() - 0.5) * 1.6));
+      this.game.fx.slashArc(_e.copy(this.render).addScaledVector(dir, 1.1), _q, radius * 0.7);
+    }
     const hits = titans.hitTest(center, radius);
     if (!hits || !hits.length) return;
     // best part: nape > eye > ankle > others
@@ -560,10 +566,6 @@ export class Player {
       if (this.blade <= 0) { this.game.audio?.bladeBreak?.(); this.game.events.emit('player:bladeBroken', {}); }
       this.cam.trauma = Math.min(1, this.cam.trauma + (res.killed ? 0.5 : 0.2));
       if (res.killed) this.game.hitstop = 0.07;
-    }
-    if (this.game.fx?.slashArc) {
-      _q.setFromRotationMatrix(_m.lookAt(_a.set(0, 0, 0), dir, UP));
-      this.game.fx.slashArc(center, _q, radius * 0.8);
     }
   }
 

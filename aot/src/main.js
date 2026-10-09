@@ -23,8 +23,8 @@ renderer.setSize(innerWidth, innerHeight);
 renderer.shadowMap.enabled = !params.has('noshadow');
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.05;
+renderer.toneMapping = THREE.NoToneMapping;
+
 document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
@@ -37,12 +37,13 @@ const game = {
   scene, camera, renderer, events: new Events(), time: 0, mode: 'menu', hitstop: 0,
   collision: new CollisionWorld(), settings: { sens: +(params.get('sens') || 1), invertY: params.has('invert') },
 };
+game.noRender = params.has('norender');
 window.game = game; // handy for debugging and the headless test bench
 game.input = new Input(renderer.domElement);
 
-async function load(path, fn) {
-  try { const m = await import(path); return await fn(m); }
-  catch (e) { console.error('[module failed]', path, e); return null; }
+async function load(imp, fn) {
+  try { const m = await imp(); return await fn(m); }
+  catch (e) { console.error('[module failed]', imp.toString(), e); return null; }
 }
 
 // ---------------------------------------------------------------- fallback pieces (used only if a module is missing)
@@ -81,20 +82,33 @@ const boot = async () => {
 
   say('Raising the Walls…');
   game.world = params.has('testworld') ? fallbackWorld()
-    : (await load('./world/world.js', (m) => m.buildWorld(game))) || fallbackWorld();
+    : (await load(() => import('./world/world.js'), (m) => m.buildWorld(game))) || fallbackWorld();
   if (game.world.sun) { game.world.sun.shadow.camera.updateProjectionMatrix?.(); }
 
   say('Waking the Titans…');
-  game.fx = await load('./fx/effects.js', (m) => new m.Effects(game));
-  game.speedLines = await load('./fx/effects.js', (m) => (m.SpeedLines ? new m.SpeedLines(renderer) : null));
-  game.audio = params.has('noaudio') ? null : await load('./audio/audio.js', (m) => new m.Audio());
-  game.hud = await load('./ui/hud.js', (m) => new m.Hud(game));
-  game.titans = params.has('notitans') ? null : await load('./titans/titans.js', (m) => new m.TitanManager(game));
+  game.fx = await load(() => import('./fx/effects.js'), (m) => new m.Effects(game));
+  game.speedLines = await load(() => import('./fx/effects.js'), (m) => (m.SpeedLines ? new m.SpeedLines(renderer) : null));
+  game.audio = params.has('noaudio') ? null : await load(() => import('./audio/audio.js'), (m) => new m.Audio());
+  game.hud = await load(() => import('./ui/hud.js'), (m) => new m.Hud(game));
+  game.titans = params.has('notitans') ? null : await load(() => import('./titans/titans.js'), (m) => new m.TitanManager(game));
 
   say('Fitting the ODM gear…');
   game.player = new Player(game);
-  game.player.model = (await load('./player/model.js', (m) => { const pm = new m.PlayerModel(game); if (pm.root && !pm.root.parent) scene.add(pm.root); return pm; })) || fallbackModel();
+  game.player.model = (await load(() => import('./player/model.js'), (m) => { const pm = new m.PlayerModel(game); pm.autoGas = false; if (pm.root && !pm.root.parent) scene.add(pm.root); return pm; })) || fallbackModel();
   game.flow = new Game(game);
+
+  // comrades in the air: AI soldiers on the same ODM physics
+  game.allies = [];
+  if (!params.has('noallies')) await load(() => import('./player/ally.js'), async (am) => {
+    const mm = await import('./player/model.js');
+    const starts = [[-40, 55, 150], [30, 70, 230], [-80, 45, 300], [90, 60, 190], [0, 80, 360]];
+    starts.slice(0, +(params.get('allies') ?? 3)).forEach(([x, y, z], i) => {
+      const model = new mm.PlayerModel(game);
+      model.autoGas = false;
+      if (model.root && !model.root.parent) scene.add(model.root);
+      game.allies.push(new am.Ally(game, model, new THREE.Vector3(x, y, z), i * 1.37 + 0.5));
+    });
+  });
 
   game.input.onLockChange = (locked) => {
     if (!locked && (game.mode === 'expedition' || game.mode === 'free') && game.player.alive) {
@@ -148,17 +162,20 @@ function step(dt) {
   game.time += simDt;
 
   const playing = game.mode === 'expedition' || game.mode === 'free';
-  if (playing) {
-    player.handleInput(input, dt);
-    acc += simDt;
-    let n = 0;
-    while (acc >= STEP && n < 12) { player.fixedUpdate(STEP); acc -= STEP; n++; }
-    if (n === 12) acc = 0;
+  if (playing) player.handleInput(input, dt);
+  acc += simDt;
+  let n = 0;
+  while (acc >= STEP && n < 12) {
+    if (playing) player.fixedUpdate(STEP);
+    for (const a of game.allies) a.fixedUpdate(STEP);
+    acc -= STEP; n++;
   }
+  if (n === 12) acc = 0;
   try { game.titans?.update(simDt); } catch (e) { console.error('titans.update', e); game._titanErr = (game._titanErr || 0) + 1; if (game._titanErr > 5) game.titans = null; }
   game.collision.updateDynamic();
   if (playing) player.update(simDt, acc / STEP);
   else menuCamera(dt);
+  for (const a of game.allies) a.update(simDt, acc / STEP);
   game.flow.update(simDt);
   try { game.fx?.update(simDt); } catch (e) { console.error('fx.update', e); }
   try { game.world?.update?.(simDt, camera.position); } catch (e) { console.error('world.update', e); }
@@ -176,6 +193,7 @@ function step(dt) {
   if (game.hud?.update) game.hud.update(hudState(playing));
   input.consume();
 
+  if (game.noRender) return;
   renderer.render(scene, camera);
   if (game.speedLines) {
     const s = playing ? player.speed : 0;
