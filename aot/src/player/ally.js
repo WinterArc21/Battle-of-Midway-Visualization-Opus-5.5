@@ -26,6 +26,15 @@ export class Ally {
     this.rand = mulberry(Math.floor(seed * 1000) + 7);
     this._origins = [new THREE.Vector3(), new THREE.Vector3()];
     this.boost = 0;
+    // cheap comrades: no shadow casting (tiny at range), cel outlines only when close to the camera
+    this.outlines = [];
+    model?.root?.traverse((o) => {
+      if (!o.isMesh) return;
+      o.castShadow = false;
+      const m = o.material;
+      if (m && m.isMeshBasicMaterial && m.side === THREE.BackSide) this.outlines.push(o);
+    });
+    this.outlinesOn = true;
   }
 
   _pickAnchor() {
@@ -115,6 +124,8 @@ export class Ally {
     if (upT.lengthSq() > 1e-3) this.up.lerp(upT.normalize(), 1 - Math.exp(-5 * dt)).normalize();
     const dist = this.render.distanceTo(this.game.camera.position);
     const visible = dist < 260;
+    const wantOutlines = dist < 45;
+    if (wantOutlines !== this.outlinesOn) { this.outlinesOn = wantOutlines; for (const o of this.outlines) o.visible = wantOutlines; }
     if (this.model) {
       this.model.root.visible = visible;
       if (visible) this.model.update(dt, {

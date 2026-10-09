@@ -280,8 +280,8 @@ const TEMPLATE = `
 
 <div class="wof-screen wof-menu">
   <div class="wof-screen-in">
-    <h1 class="wof-title">ATTACK ON TITAN</h1>
-    <div class="wof-subtitle">Wings of Freedom &mdash; a fan-made ODM gear game</div>
+    <h1 class="wof-title">WINGS OF FREEDOM</h1>
+    <div class="wof-subtitle">An unofficial Attack on Titan fan game &middot; not affiliated with the creators or publishers</div>
     <div class="wof-divider"></div>
     <div class="wof-menu-btns">
       <button class="wof-btn" data-mode="expedition"><b>EXPEDITION</b><small>Fight the titans</small></button>

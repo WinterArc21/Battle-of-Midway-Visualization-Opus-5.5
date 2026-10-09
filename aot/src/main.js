@@ -116,8 +116,11 @@ const boot = async () => {
       game.hud?.showPause?.(() => { game.paused = false; game.hud?.hidePause?.(); game.input.lock(); });
     }
   };
+  game.input.onLockDenied = () => {
+    game.hud?.message?.('Mouse capture is blocked here: move the cursor to look, push it against an edge to keep turning', 5, 'info');
+  };
   renderer.domElement.addEventListener('click', () => {
-    if ((game.mode === 'expedition' || game.mode === 'free') && !game.input.locked && game.player.alive) {
+    if ((game.mode === 'expedition' || game.mode === 'free') && !game.input.locked && !game.input.lockDenied && game.player.alive) {
       game.paused = false; game.hud?.hidePause?.(); game.input.lock();
     }
   });
@@ -162,6 +165,8 @@ function step(dt) {
   game.time += simDt;
 
   const playing = game.mode === 'expedition' || game.mode === 'free';
+  input.freeLook = playing && !input.locked && input.lockDenied && player.alive;
+  input.edgeTurn(dt);
   if (playing) player.handleInput(input, dt);
   acc += simDt;
   let n = 0;

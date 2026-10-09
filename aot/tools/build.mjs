@@ -25,3 +25,20 @@ fs.mkdirSync(path.join(AOT, 'dist'), { recursive: true });
 const out = path.join(AOT, 'dist/wings-of-freedom.html');
 fs.writeFileSync(out, html);
 console.log('wrote', out, (html.length / 1024).toFixed(0), 'KB');
+
+// --artifact <file>: the same page without the document shell, for hosts that wrap the content in their own
+// <!doctype>/<head>/<body> skeleton (title and styles first, then the markup and the inline module).
+const ai = process.argv.indexOf('--artifact');
+if (ai > 0 && process.argv[ai + 1]) {
+  let frag = html
+    .replace(/<!doctype html>\s*/i, '')
+    .replace(/<html[^>]*>\s*/i, '').replace(/<\/html>\s*/i, '')
+    .replace(/<head>\s*/i, '').replace(/<\/head>\s*/i, '')
+    .replace(/<body>\s*/i, '').replace(/<\/body>\s*/i, '')
+    .replace(/<meta charset="utf-8">\s*/i, '')
+    .replace(/<meta name="viewport"[^>]*>\s*/i, '');
+  const title = frag.match(/<title>[\s\S]*?<\/title>\s*/i)[0];
+  frag = title + frag.replace(title, '');
+  fs.writeFileSync(process.argv[ai + 1], frag);
+  console.log('wrote', process.argv[ai + 1], (frag.length / 1024).toFixed(0), 'KB (artifact fragment)');
+}
