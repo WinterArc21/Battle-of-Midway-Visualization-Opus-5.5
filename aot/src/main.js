@@ -91,6 +91,21 @@ const boot = async () => {
   game.audio = params.has('noaudio') ? null : await load(() => import('./audio/audio.js'), (m) => new m.Audio());
   game.hud = await load(() => import('./ui/hud.js'), (m) => new m.Hud(game));
   game.titans = params.has('notitans') ? null : await load(() => import('./titans/titans.js'), (m) => new m.TitanManager(game));
+  game.training = await load(() => import('./titans/dummies.js'), (m) => new m.TrainingCourse(game));
+  game.trainingActive = false;
+  // everything that can be cut (titans + training dummies), and one hit test over all of it
+  const _targets = [];
+  game.targetList = () => {
+    _targets.length = 0;
+    for (const t of game.titans?.titans || []) _targets.push(t);
+    if (game.trainingActive) for (const t of game.training?.titans || []) _targets.push(t);
+    return _targets;
+  };
+  game.hitTest = (c, r) => {
+    const a = game.titans?.hitTest?.(c, r) || [];
+    if (game.trainingActive && game.training?.hitTest) { const b = game.training.hitTest(c, r); if (b?.length) return a.concat(b); }
+    return a;
+  };
 
   say('Fitting the ODM gear…');
   game.player = new Player(game);
@@ -110,24 +125,26 @@ const boot = async () => {
     });
   });
 
-  game.input.onLockChange = (locked) => {
-    if (!locked && (game.mode === 'expedition' || game.mode === 'free') && game.player.alive) {
-      game.paused = true;
-      game.hud?.showPause?.(() => { game.paused = false; game.hud?.hidePause?.(); game.input.lock(); });
-    }
-  };
-  game.input.onLockDenied = () => {
-    game.hud?.message?.('Mouse capture is blocked here: move the cursor to look, push it against an edge to keep turning', 5, 'info');
-  };
+  // The keyboard is enough; the mouse is optional. Clicking the game captures the mouse for mouse look,
+  // and leaving that capture (Esc) pauses, like any keyboard pause.
+  const isPlaying = () => game.mode === 'expedition' || game.mode === 'free' || game.mode === 'training';
+  const resume = () => { game.paused = false; game.hud?.hidePause?.(); };
+  const pause = () => { if (!isPlaying() || !game.player.alive || game.paused) return; game.paused = true; game.hud?.showPause?.(resume); };
+  game.pause = pause; game.resume = resume;
+  let wasLocked = false;
+  game.input.onLockChange = (locked) => { if (!locked && wasLocked) pause(); wasLocked = locked; };
+  game.input.onLockDenied = () => game.hud?.message?.('Mouse look is not available here: the arrow keys steer', 3, 'info');
   renderer.domElement.addEventListener('click', () => {
-    if ((game.mode === 'expedition' || game.mode === 'free') && !game.input.locked && !game.input.lockDenied && game.player.alive) {
-      game.paused = false; game.hud?.hidePause?.(); game.input.lock();
-    }
+    if (isPlaying() && !game.paused && !game.input.locked && !game.input.lockDenied && game.player.alive) game.input.lock();
   });
   addEventListener('keydown', (e) => {
+    if (e.repeat) return;
     if (e.code === 'KeyM') game.audio?.toggleMute?.();
-    if (e.code === 'KeyP' && game.mode !== 'menu') { game.paused = !game.paused; if (game.paused) game.hud?.showPause?.(() => { game.paused = false; game.hud?.hidePause?.(); game.input.lock(); }); else game.hud?.hidePause?.(); }
+    if (e.code === 'KeyH') game.showControls = !game.showControls;
+    if ((e.code === 'Escape' || e.code === 'KeyP') && isPlaying()) { if (game.paused) resume(); else pause(); }
   });
+  addEventListener('blur', () => pause());
+  game.showControls = true;
   addEventListener('resize', () => {
     renderer.setSize(innerWidth, innerHeight);
     camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
@@ -160,11 +177,13 @@ function step(dt) {
   if (game.paused) { input.consume(); renderer.render(scene, camera); return; }
 
   // hit-stop on kills: time slows for a few frames (the anime's freeze-frame on a nape cut)
+  // kill moment: a freeze-frame, then a short slow-motion that eases back to full speed
   let simDt = dt;
-  if (game.hitstop > 0) { game.hitstop -= dt; simDt = dt * 0.12; }
+  if (game.hitstop > 0) { game.hitstop -= dt; simDt = dt * 0.1; }
+  else if (game.slowmo > 0) { game.slowmo -= dt; simDt = dt * (0.3 + 0.7 * (1 - Math.max(0, game.slowmo) / 0.4)); }
   game.time += simDt;
 
-  const playing = game.mode === 'expedition' || game.mode === 'free';
+  const playing = game.mode === 'expedition' || game.mode === 'free' || game.mode === 'training';
   input.freeLook = playing && !input.locked && input.lockDenied && player.alive;
   input.edgeTurn(dt);
   if (playing) player.handleInput(input, dt);
@@ -177,6 +196,7 @@ function step(dt) {
   }
   if (n === 12) acc = 0;
   try { game.titans?.update(simDt); } catch (e) { console.error('titans.update', e); game._titanErr = (game._titanErr || 0) + 1; if (game._titanErr > 5) game.titans = null; }
+  if (game.trainingActive) { try { game.training?.update(simDt); } catch (e) { console.error('training.update', e); } }
   game.collision.updateDynamic();
   if (playing) player.update(simDt, acc / STEP);
   else menuCamera(dt);
@@ -208,19 +228,42 @@ function step(dt) {
 }
 window.stepGame = step;
 
+const _tp = new THREE.Vector3(), _cf = new THREE.Vector3(), _cr = new THREE.Vector3(), _cu = new THREE.Vector3();
+const _hookTargets = [{ x: 0, y: 0, visible: false, valid: false, attached: false }, { x: 0, y: 0, visible: false, valid: false, attached: false }];
+const _threats = [];
+const _markers = [];
+function toScreen(v, out) {
+  _tp.copy(v).project(camera);
+  out.x = (_tp.x * 0.5 + 0.5) * innerWidth; out.y = (-_tp.y * 0.5 + 0.5) * innerHeight;
+  return _tp.z < 1 && Math.abs(_tp.x) < 1.05 && Math.abs(_tp.y) < 1.05;
+}
 function hudState(playing) {
   const p = game.player;
-  const markers = [];
-  if (playing && game.titans?.titans) {
-    for (const t of game.titans.titans) {
+  _markers.length = 0; _threats.length = 0;
+  if (playing) {
+    camera.getWorldDirection(_cf); _cr.crossVectors(_cf, camera.up).normalize(); _cu.crossVectors(_cr, _cf).normalize();
+    for (const t of game.targetList()) {
       if (!t.alive || !t.napeWorld) continue;
       const nw = t.napeWorld();
       if (!nw?.center) continue;
       const d = nw.center.distanceTo(p.render);
       if (d > 110) continue;
-      _v.copy(nw.center).project(camera);
-      const vis = _v.z < 1 && Math.abs(_v.x) < 1.1 && Math.abs(_v.y) < 1.1;
-      markers.push({ x: (_v.x * 0.5 + 0.5) * innerWidth, y: (-_v.y * 0.5 + 0.5) * innerHeight, visible: vis, distance: d });
+      const m = { x: 0, y: 0, visible: false, distance: d };
+      m.visible = toScreen(nw.center, m);
+      _markers.push(m);
+      // off-screen titans within 90 m: a chevron pointing at them (danger when it is reaching for you)
+      if (!m.visible && t.kind !== 'dummy' && d < 90) {
+        // radar mapping: straight ahead is up, behind you is down
+        _tp.subVectors(t.position, camera.position);
+        const angle = Math.atan2(_tp.dot(_cr), _tp.x * _cf.x + _tp.z * _cf.z);
+        _threats.push({ x: m.x, y: m.y, angle, danger: Math.max(t.threat || 0, d < 25 ? 0.5 : 0), distance: d });
+      }
+    }
+    for (let i = 0; i < 2; i++) {
+      const h = p.odm.hooks[i], T = p.targets[i], o = _hookTargets[i];
+      o.attached = h.attached;
+      o.valid = h.attached || T.valid;
+      o.visible = o.valid && toScreen(h.attached ? h.anchor : T.point, o);
     }
   }
   return {
@@ -229,8 +272,11 @@ function hudState(playing) {
     kills: p.stats.kills, score: game.flow.score, speed: playing ? p.speed : 0, combo: game.flow.combo,
     hooks: p.odm.hooks.map((h) => ({ state: h.state === 'retracting' ? 'idle' : h.state })),
     aim: { valid: p.aim.valid, distance: p.aim.distance, lockTitan: p.aim.lockTitan },
-    napeMarkers: markers, objective: playing ? game.flow.objective() : '', fps: game.fps,
+    napeMarkers: _markers, hookTargets: _hookTargets, threats: _threats,
+    objective: playing ? game.flow.objective() : '', fps: game.fps,
     grabbed: !!p.grabbedBy, struggle: p.struggle, swapping: p.swapT > 0, wave: game.flow.wave,
+    timer: game.flow.timer(), targets: game.flow.trainingTargets(), hint: playing ? game.flow.hint : null,
+    controlsCard: playing && game.showControls,
   };
 }
 

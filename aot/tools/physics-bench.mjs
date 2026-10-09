@@ -27,6 +27,8 @@ function aimAt(p, target) {
   const d = target.clone().sub(p.pos).normalize();
   p.yaw = Math.atan2(d.x, d.z); p.pitch = Math.asin(d.y);
   p.aim.valid = true; p.aim.point.copy(target); p.aim.distance = target.distanceTo(p.pos); p.aim.dir.copy(d);
+  // the ropes fire at their auto-targets: point both at the scripted target
+  for (const T of p.targets) { T.valid = true; T.point.copy(target); T.distance = target.distanceTo(p.pos); T.age = 0; }
 }
 const results = [];
 const check = (name, ok, info) => { results.push({ name, ok, info }); console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}  ${info}`); };
@@ -79,7 +81,7 @@ const check = (name, ok, info) => { results.push({ name, ok, info }); console.lo
   p.reset(new THREE.Vector3(0, 50.6, 0), 0);
   for (let i = 0; i < 60; i++) p.fixedUpdate(H);
   const tgt = new THREE.Vector3(0, 60, 86.5);
-  aimAt(p, tgt); p.wantBoost = true; p.wishF = 0; p.wishR = 0; p._fire(0, false); p._fire(1, true);
+  aimAt(p, tgt); p.wantBoost = true; p.wishF = 0; p.wishR = 0; p.turn = 0; p._fire(0, false); p._fire(1, true);
   let t = 0, vmax = 0, arrived = -1;
   for (; t < 6; t += H) { p.fixedUpdate(H); vmax = Math.max(vmax, p.speed); if (arrived < 0 && Math.hypot(p.pos.x, p.pos.z - 90) - 4 < 4) arrived = t; }
   check('boosted zip: faster arrival, peak 45-80 m/s, lands without injury', arrived > 0.8 && arrived < 3 && vmax > 45 && vmax < 85 && p.hp > 0.95, `arrive=${arrived.toFixed(2)}s vmax=${vmax.toFixed(1)} gasLeft=${p.odm.gas.toFixed(3)} hp=${p.hp.toFixed(2)}`);
@@ -131,6 +133,39 @@ const check = (name, ok, info) => { results.push({ name, ok, info }); console.lo
   let maxY = 0;
   for (let t = 0; t < 4; t += H) { p.fixedUpdate(H); maxY = Math.max(maxY, p.pos.y); }
   check('wall climb on the wire reaches near the anchor', maxY > 40, `maxY=${maxY.toFixed(1)} z=${p.pos.z.toFixed(2)}`);
+}
+
+// 8. keyboard auto-targeting: among trunks, each rope finds an anchor on its own side, ahead and above
+{
+  const g = makeGame(); const p = g.player;
+  p.reset(new THREE.Vector3(0, 30, 45), 0);   // heading +z; trunks ahead at z 90..240
+  p.grounded = false;
+  for (let i = 0; i < 4; i++) { p._scan(0); p._scan(1); }
+  const L = p.targets[0], R = p.targets[1];
+  const right = new THREE.Vector3(-1, 0, 0);   // heading-right for yaw 0
+  const side = (T) => T.point.clone().sub(p.render).dot(right);
+  check('auto-target: both ropes find anchors ahead, Z left of X, above you', L.valid && R.valid && side(L) <= side(R) + 0.5 && L.point.z > 50 && R.point.z > 50 && L.point.y > 30 && R.point.y > 30,
+    `Z=${L.valid ? L.point.toArray().map((v) => v.toFixed(0)).join(',') : 'none'} X=${R.valid ? R.point.toArray().map((v) => v.toFixed(0)).join(',') : 'none'}`);
+}
+
+// 9. ↓ on a rope pays the wire out; release flick; tank turning on the ground
+{
+  const g = makeGame(); const p = g.player;
+  p.reset(new THREE.Vector3(200, 85, 120), 0);
+  const hit = g.collision.raycast(new THREE.Vector3(200, 90, 100), new THREE.Vector3(0, 1, 0), 20);
+  aimAt(p, hit.point); p._fire(0, false);
+  for (let i = 0; i < 40; i++) p.fixedUpdate(H);
+  const L0 = p.odm.hooks[0].length;
+  p.payout = true;   // a brake-reel: the wire only runs out under tension, so give the swing time to load it
+  for (let i = 0; i < 360; i++) p.fixedUpdate(H);
+  p.payout = false;
+  const L1 = p.odm.hooks[0].length;
+  const keys = new Set(['ArrowLeft']);
+  const input = { held: (k) => keys.has(k), hit: () => false, up: () => false, mouseDX: 0, mouseDY: 0 };
+  const g2 = makeGame(); const q = g2.player; q.reset(new THREE.Vector3(0, 1, 40), 0);
+  for (let i = 0; i < 10; i++) q.fixedUpdate(H);
+  const y0 = q.yaw; for (let i = 0; i < 60; i++) q.handleInput(input, 1 / 60);
+  check('↓ pays out wire under tension; ← turns the heading', L1 > L0 + 4 && q.yaw - y0 > 1.5, `wire ${L0.toFixed(1)} -> ${L1.toFixed(1)} m, yaw +${(q.yaw - y0).toFixed(2)} rad in 1 s`);
 }
 
 const failed = results.filter((r) => !r.ok).length;

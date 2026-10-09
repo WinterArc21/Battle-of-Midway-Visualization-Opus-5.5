@@ -31,10 +31,22 @@ export const CFG = {
   air: { control: 7, pump: 10 },
   ground: { run: 11, accel: 80, skid: 22, jump: 7.8, coyote: 0.12 },
   impact: { safe: 30, dmg: 0.022, stun: 48 },
+  keys: {
+    turnGround: 2.7, turnAir: 1.9, turnRope: 1.6,   // rad/s heading turn from ← →
+    followRate: 1.1,                                // airborne heading eases toward the flight direction
+    payout: 7,                                      // m/s the wire pays out while holding ↓ on a rope
+    releaseLift: 2.2,                               // m/s upward flick when letting go at speed
+    yawOffsets: [0.12, 0.38, 0.65, 0.95, 1.3],      // rope auto-target fan, radians toward that rope's side
+    pitches: [0.1, 0.32, 0.55, 0.8],
+    pitchesHigh: [-0.45, -0.2, 0.05, 0.3],
+  },
   cam: { dist: 4.4, height: 0.95, side: 0.6, fov: 70, fovMax: 98, sens: 0.0021, lagRate: 22 },
   combat: {
     slashTime: 0.3, reach: 2.6, dmgBase: 40, dmgPerMs: 12.5,
     wear: 0.11, spinMinSpeed: 16, spinInterval: 0.09, swapTime: 0.55,
     spares: 4, grabEscapePerPress: 0.2, grabDecay: 0.18,
+    // roped to a titan: swoop round behind the neck and through the nape
+    swoopRange: 45, swoop: 33, swoopBoost: 44, swoopGain: 5.5, swoopMax: 70,
+    primeRange: 18, primeTime: 0.9,   // Space while swooping in: the cut fires on arrival at the nape
   },
 };

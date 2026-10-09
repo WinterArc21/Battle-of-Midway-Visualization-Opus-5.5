@@ -17,6 +17,7 @@ export class Hook {
     this.local = new THREE.Vector3();
     this.collider = null;
     this.length = 0;                // current wire length (max distance)
+    this.payout = 0;                // m/s this wire may run out under tension (0 = reel normally)
     this.travelled = 0;
     this.age = 0;
     this.normal = new THREE.Vector3();
@@ -122,7 +123,7 @@ export class OdmGear {
     let level = 0;
     this.braking = Math.max(0, (this.braking || 0) - 1 / CFG.physicsHz);
     for (const h of this.hooks) {
-      if (!h.attached) continue;
+      if (!h.attached || h.payout > 0) continue;
       _d.subVectors(h.anchor, pos);
       const dist = _d.length();
       if (dist < CFG.hook.minLen + 0.2) continue;
@@ -136,7 +137,9 @@ export class OdmGear {
       // splattering on it (sideways passes are untouched, so swings and slingshots keep their speed)
       const allowed = CFG.reel.arrive + Math.sqrt(2 * CFG.reel.brake * Math.max(0, dist - CFG.hook.minLen - 1));
       const speed = vel.length();
-      if (vin > allowed && vin > 0.6 * speed) {
+      // no gentle arrival on a titan: you are meant to arrive fast and cut
+      const onTitan = !!(h.collider?.userData?.titan || h.collider?.userData?.dummy);
+      if (!onTitan && vin > allowed && vin > 0.6 * speed) {
         acc.addScaledVector(_d, -Math.min(CFG.reel.brakeMax, (vin - allowed) * 10) * share);
         this.braking = 0.15;
       }
@@ -149,22 +152,36 @@ export class OdmGear {
    * Wire constraints (position-based): never farther than `length`; removes outward velocity
    * (inelastic) so swings keep their tangential speed. The reel then takes in any slack.
    */
-  constrain(pos, vel) {
+  constrain(pos, vel, dt = 1 / 120) {
+    // payout > 0 (↓ held on a rope): a brake-reel. Under tension the wire runs out at up to `payout` m/s,
+    // so the outward speed is kept up to that limit and the wire lengthens with it; no slack is taken up.
+    const G = this.payout || 0;
+    let any = G > 0;
+    for (const h of this.hooks) {
+      h._keep = 0;
+      const P = Math.max(G, h.payout || 0);
+      if (P > 0) any = true;
+      if (!h.attached || P <= 0) continue;
+      _d.subVectors(pos, h.anchor);
+      const dist = _d.length();
+      if (dist < 1e-6 || dist < h.length - 0.05) continue;
+      const vout = vel.dot(_d.multiplyScalar(1 / dist));
+      if (vout > 0) { h._keep = Math.min(vout, P); h.length = Math.min(CFG.hook.range, h.length + h._keep * dt); }
+    }
     for (let it = 0; it < 2; it++) {
       for (const h of this.hooks) {
         if (!h.attached) continue;
         _d.subVectors(pos, h.anchor);
         const dist = _d.length();
-        if (dist > h.length && dist > 1e-6) {
-          _d.multiplyScalar(1 / dist);
-          pos.copy(h.anchor).addScaledVector(_d, h.length);
-          const vout = vel.dot(_d);
-          if (vout > 0) vel.addScaledVector(_d, -vout);
-        }
+        if (dist <= h.length || dist < 1e-6) continue;
+        _d.multiplyScalar(1 / dist);
+        pos.copy(h.anchor).addScaledVector(_d, h.length);
+        const vo = vel.dot(_d) - h._keep;
+        if (vo > 0) vel.addScaledVector(_d, -vo);
       }
     }
     for (const h of this.hooks) {
-      if (!h.attached) continue;
+      if (!h.attached || G > 0 || h.payout > 0) continue;
       const dist = pos.distanceTo(h.anchor);
       h.length = Math.max(CFG.hook.minLen, Math.min(h.length, dist));
     }

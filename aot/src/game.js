@@ -1,4 +1,5 @@
-// Game flow: title flyover, the Expedition (waves of titans, the Colossal on wave 3), Free Flight, score and combos.
+// Game flow: the title flyover, the Expedition (waves of titans, the Colossal on wave 3), the Training Grounds
+// (cut every wooden dummy against the clock), Free Flight, score and combos, and the in-game tutorial.
 import * as THREE from 'three';
 
 const WAVES = [
@@ -8,57 +9,115 @@ const WAVES = [
   { msg: 'WAVE 4 — THE FOREST OF GIANT TREES', field: 1, forest: 6, town: 0, abnormal: 2, sizes: [6, 15] },
 ];
 
+// Tutorial steps: each shows until the player has actually done it (or 14 s pass).
+const STEPS = [
+  { id: 'rope', keys: ['X'], text: 'Hold X to fire your right rope at the X marker', done: (p) => p.odm.attachedCount() > 0 },
+  { id: 'zip', keys: ['Z', 'X'], text: 'Hold Z and X together to zip forward between both anchors', done: (p) => p.odm.attachedCount() === 2 },
+  { id: 'steer', keys: ['←', '→'], text: 'Steer with the arrows. Let go of Z / X to fly free, then grab the next anchor', done: (p, s) => s.steerT > 0.6 },
+  { id: 'gas', keys: ['Shift'], text: 'Hold Shift for a gas boost (tap it on the ground to jump)', done: (p, s) => s.boostT > 0.6 },
+  { id: 'cut', keys: ['Space'], text: 'Space cuts. Hit the nape on the back of the neck, fast', done: (p, s) => s.cuts > 0, modes: ['training', 'expedition'] },
+  { id: 'slack', keys: ['↓'], text: 'On a rope, hold ↓ to let the wire out for a longer swing', done: (p, s) => s.payoutT > 0.5 },
+];
+
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch { /* storage blocked: records just aren't kept */ } },
+};
+
 export class Game {
   constructor(game) {
     this.g = game;
     this.wave = 0; this.score = 0; this.combo = 1; this.comboT = 0;
-    this.waveClear = 0;
-    this.menuT = 0;
+    this.waveClear = 0; this.run = 0;
+    this.hint = null;
+    this.tut = { step: 0, t: 0, doneT: 0, steerT: 0, boostT: 0, payoutT: 0, cuts: 0, seen: new Set() };
     const ev = game.events;
     ev.on('titan:killed', (e) => this._onKill(e));
     ev.on('player:hit', (e) => this._onHit(e));
     ev.on('player:died', (e) => this._onDeath(e));
     ev.on('titan:step', (e) => this._onStep(e));
+    ev.on('training:cut', (e) => this._onCut(e));
     ev.on('colossal:appear', () => {
       game.hud?.message?.('THE COLOSSAL TITAN HAS APPEARED', 4.5, 'big');
       game.player.cam.trauma = 1;
       this.colossal = true;
     });
-    ev.on('player:grabbed', () => game.hud?.message?.('GRABBED! — MASH LEFT MOUSE TO CUT FREE', 2.2, 'warn'));
+    ev.on('player:grabbed', () => game.hud?.message?.('GRABBED! MASH SPACE TO CUT FREE', 2.2, 'warn'));
     ev.on('player:escaped', () => game.hud?.message?.('CUT FREE!', 1.2, 'info'));
-    ev.on('player:bladeBroken', () => game.hud?.message?.(game.player.spares > 0 ? 'BLADES DULL — PRESS R' : 'NO BLADES LEFT — FIND A SUPPLY DEPOT', 2, 'warn'));
+    ev.on('player:bladeBroken', () => game.hud?.message?.(game.player.spares > 0 ? 'Blades dull: swapping to a fresh pair' : 'NO BLADES LEFT: find a supply depot (crates under a flag)', 2, 'warn'));
+    let lastNone = -9;
+    ev.on('hook:none', () => {
+      if (game.time - lastNone < 3) return;
+      lastNone = game.time;
+      game.hud?.message?.('Nothing to anchor to on that side: get closer to trees, buildings or titans', 2, 'info');
+    });
   }
 
   // ---------------------------------------------------------------- modes
   toMenu() {
     const g = this.g;
+    this.run++;
     g.mode = 'menu';
+    g.paused = false;
+    this._stopTraining();
+    g.hud?.hideDeath?.(); g.hud?.hidePause?.(); g.hud?.hideTrainingResult?.();
+    g.input.unlock?.();
     g.titans?.clear?.();
+    this.hint = null;
     // a few titans wandering the field behind the menu for atmosphere
     this._spawnSome('field', 3, [5, 12], 0);
+    g.audio?.setMusic?.(0.15);
     g.hud?.showMenu?.((mode) => this.start(mode));
   }
 
   start(mode) {
     const g = this.g;
-    g.hud?.hideMenu?.(); g.hud?.hideDeath?.(); g.hud?.hidePause?.();
+    if (mode === 'training' && !g.training) mode = 'free';
+    this.run++;
+    g.hud?.hideMenu?.(); g.hud?.hideDeath?.(); g.hud?.hidePause?.(); g.hud?.hideTrainingResult?.();
     g.audio?.init?.();
+    g.paused = false;
     g.mode = mode;
     g.titans?.clear?.();
-    const sp = g.world?.playerSpawn || { position: new THREE.Vector3(0, 50.6, 0), yaw: 0 };
-    g.player.reset(sp.position.clone().add(new THREE.Vector3(0, 0.6, 0)), sp.yaw);
-    g.player.infiniteGas = mode === 'free';
-    this.wave = 0; this.score = 0; this.combo = 1; this.comboT = 0; this.colossal = false; this.waveClear = 0;
+    this._stopTraining();
+    this.wave = 0; this.score = 0; this.combo = 1; this.comboT = 0; this.colossal = false; this.colossalSpawned = false; this.waveClear = 0;
     this.startTime = g.time;
-    g.input.lock();
+    this.trainStart = null; this.trainEnd = null; this.trainSpeeds = [];
+
+    // where you start: the wall top for the Expedition, the forest edge for Free Flight, the course start for Training
+    let sp = g.world?.playerSpawn || { position: new THREE.Vector3(0, 50.6, 0), yaw: 0 };
+    if (mode === 'free') {
+      const d = (g.world?.supplyDepots || []).filter((x) => x.position.z > 120).sort((a, b) => a.position.z - b.position.z)[0];
+      if (d) sp = { position: d.position.clone(), yaw: 0 };
+    }
+    if (mode === 'training') {
+      g.training.start();
+      g.trainingActive = true;
+      if (g.training.spawn) sp = g.training.spawn;
+      this.trainStart = g.time;
+    }
+    g.player.reset(sp.position.clone().add(new THREE.Vector3(0, 0.6, 0)), sp.yaw ?? 0);
+    g.player.infiniteGas = mode !== 'expedition';
+    if (mode === 'training') g.player.spares = 99;
+
+    this._startTutorial();
     if (mode === 'expedition') {
       g.hud?.message?.('DEDICATE YOUR HEART', 2.6, 'big');
       this.waveClear = 2.5; // first wave after the title card
       g.audio?.setMusic?.(0.5);
+    } else if (mode === 'training') {
+      g.hud?.message?.('TRAINING GROUNDS: cut every dummy\'s nape. The clock is running.', 3.5, 'info');
+      g.audio?.setMusic?.(0.4);
     } else {
-      g.hud?.message?.('FREE FLIGHT — the forest is yours. Infinite gas.', 3.5, 'info');
+      g.hud?.message?.('FREE FLIGHT: the forest is yours. Infinite gas.', 3.5, 'info');
       g.audio?.setMusic?.(0.25);
     }
+  }
+
+  _stopTraining() {
+    const g = this.g;
+    if (g.trainingActive) g.training?.stop?.();
+    g.trainingActive = false;
   }
 
   _nextWave() {
@@ -68,17 +127,20 @@ export class Game {
     const scale = 1 + Math.max(0, idx - WAVES.length + 1) * 0.35;
     this.wave++;
     g.hud?.message?.(idx >= WAVES.length ? `WAVE ${this.wave} — THE HORDE GROWS` : w.msg, 3, 'big');
-    this._spawnSome('field', Math.round(w.field * scale), w.sizes, Math.round(w.abnormal * scale * 0.5));
+    // the first wave walks right up to the wall: within rope range of the wall top, so you can zip down onto them
+    this._spawnSome('field', Math.round(w.field * scale), w.sizes, Math.round(w.abnormal * scale * 0.5), idx === 0 ? { zMin: 45, zMax: 100, xMax: 85 } : null);
     this._spawnSome('forest', Math.round(w.forest * scale), w.sizes, Math.round(w.abnormal * scale * 0.5));
     this._spawnSome('town', Math.round(w.town * scale), w.sizes, 0);
     if (w.colossal && !this.colossalSpawned) {
       this.colossalSpawned = true;
-      setTimeout(() => { if (g.mode === 'expedition') g.titans?.spawn?.({ kind: 'colossal', position: new THREE.Vector3(0, 0, 28), yaw: Math.PI }); }, 3500);
+      const run = this.run;
+      // only if this is still the same expedition (not a restart or another mode)
+      setTimeout(() => { if (this.run === run && g.mode === 'expedition' && g.player.alive) g.titans?.spawn?.({ kind: 'colossal', position: new THREE.Vector3(0, 0, 28), yaw: Math.PI }); }, 3500);
     }
     g.audio?.setMusic?.(Math.min(1, 0.55 + this.wave * 0.12));
   }
 
-  _spawnSome(area, count, sizes, abnormals) {
+  _spawnSome(area, count, sizes, abnormals, box = null) {
     const g = this.g;
     if (!g.titans?.spawn || count <= 0) return;
     const zones = (g.world?.titanSpawns || []).filter((z) => z.area === area);
@@ -87,6 +149,10 @@ export class Game {
       const z = zones.length ? zones[(Math.random() * zones.length) | 0] : fallback;
       const a = Math.random() * Math.PI * 2, r = Math.sqrt(Math.random()) * z.radius;
       const pos = new THREE.Vector3(z.center.x + Math.cos(a) * r, 0, z.center.z + Math.sin(a) * r);
+      if (box) {
+        pos.z = box.zMin + Math.random() * (box.zMax - box.zMin);
+        pos.x = (Math.random() * 2 - 1) * box.xMax;
+      }
       pos.y = g.collision.groundHeight(pos.x, pos.z);
       const h = sizes[0] + Math.random() * (sizes[1] - sizes[0]);
       try { g.titans.spawn({ kind: i < abnormals ? 'abnormal' : 'normal', height: h, position: pos, yaw: Math.random() * Math.PI * 2 }); }
@@ -94,24 +160,52 @@ export class Game {
     }
   }
 
+  // ---------------------------------------------------------------- tutorial
+  _startTutorial() {
+    const t = this.tut;
+    t.step = 0; t.t = 0; t.doneT = 0; t.steerT = 0; t.boostT = 0; t.payoutT = 0; t.cuts = 0;
+    this.hint = null;
+  }
+  _tutorial(dt) {
+    const g = this.g, p = g.player, t = this.tut;
+    if (!p.alive || g.mode === 'menu') { this.hint = null; return; }
+    if (!p.grounded && p.turn) t.steerT += dt;
+    if (p.boosting) t.boostT += dt;
+    if (p.payout) t.payoutT += dt;
+    // skip steps already learnt this session, and ones that don't apply to this mode
+    while (t.step < STEPS.length && (t.seen.has(STEPS[t.step].id) || (STEPS[t.step].modes && !STEPS[t.step].modes.includes(g.mode)))) t.step++;
+    if (t.step >= STEPS.length) { this.hint = null; return; }
+    const s = STEPS[t.step];
+    if (t.doneT > 0) {
+      t.doneT -= dt;
+      if (t.doneT <= 0) { t.seen.add(s.id); t.step++; t.t = 0; this.hint = null; }
+      return;
+    }
+    t.t += dt;
+    if (t.t < 1.2) { this.hint = null; return; }   // let the title card breathe first
+    this.hint = s;
+    if (s.done(p, t) || t.t > 15) t.doneT = 0.7;
+  }
+
   // ---------------------------------------------------------------- events
   _onHit(e) {
     const g = this.g;
     const { damage, result, point, part } = e;
+    if (part === 'nape' || e.titan?.kind === 'dummy') this.tut.cuts++;
     if (!g.hud?.damageNumber) return;
     const sp = point.clone().project(g.camera);
     if (sp.z < 1) {
       const x = (sp.x * 0.5 + 0.5) * innerWidth, y = (-sp.y * 0.5 + 0.5) * innerHeight;
       g.hud.damageNumber(damage, x, y, !!result?.killed);
     }
-    if (!result?.killed && part === 'nape' && result?.effect === 'shallow') g.hud?.message?.('TOO SLOW — HIT THE NAPE FASTER', 1.4, 'warn');
+    if (!result?.killed && part === 'nape' && result?.effect === 'shallow') g.hud?.message?.('TOO SLOW: hit the nape faster (zip in on a rope, then cut)', 1.6, 'warn');
     if (result?.effect === 'blind') g.hud?.message?.('BLINDED', 1, 'info');
-    if (result?.effect === 'cripple') g.hud?.message?.('ANKLE CUT — IT\'S DOWN', 1.2, 'info');
+    if (result?.effect === 'cripple') g.hud?.message?.('ANKLE CUT: IT\'S DOWN', 1.2, 'info');
   }
 
   _onKill(e) {
     const g = this.g;
-    if (g.mode === 'menu') return;
+    if (g.mode !== 'expedition') return;
     const t = e.titan;
     const p = g.player;
     if (this.comboT > 0) this.combo = Math.min(9, this.combo + 1); else this.combo = 1;
@@ -120,8 +214,41 @@ export class Game {
     const speedBonus = Math.round(p.speed * 4);
     this.score += (base + speedBonus) * this.combo;
     p.stats.kills++;
-    if (t?.kind === 'colossal') g.hud?.message?.('THE COLOSSAL TITAN HAS FALLEN', 4, 'big');
+    if (t?.kind === 'colossal') { g.hud?.message?.('THE COLOSSAL TITAN HAS FALLEN', 4, 'big'); g.hitstop = 0.4; }
     else if (this.combo > 1) g.hud?.message?.(`${this.combo}× COMBO`, 1.2, 'info');
+  }
+
+  _onCut(e) {
+    const g = this.g;
+    if (g.mode !== 'training') return;
+    const p = g.player;
+    this.trainSpeeds.push(p.speed);
+    p.stats.kills++;
+    this.score += Math.round(200 + p.speed * 6);
+    const tr = g.training;
+    const left = tr?.remaining ?? 0, total = tr?.total ?? 0;
+    if (left > 0) g.hud?.message?.(`CUT! ${total - left} / ${total}`, 1.2, 'info');
+    else this._finishTraining();
+  }
+
+  _finishTraining() {
+    const g = this.g;
+    if (this.trainEnd != null) return;
+    this.trainEnd = g.time;
+    const time = this.trainEnd - this.trainStart;
+    const prev = parseFloat(store.get('wof.trainingBest'));
+    const newBest = !(prev > 0) || time < prev;
+    if (newBest) store.set('wof.trainingBest', time.toFixed(2));
+    const avg = this.trainSpeeds.length ? this.trainSpeeds.reduce((a, b) => a + b, 0) / this.trainSpeeds.length : 0;
+    g.hud?.message?.('COURSE COMPLETE', 2.5, 'big');
+    g.audio?.setMusic?.(0.2);
+    const run = this.run;
+    setTimeout(() => {
+      if (this.run !== run) return;
+      g.input.unlock?.();
+      g.hud?.showTrainingResult?.({ time, best: newBest ? time : prev, cuts: g.training?.total ?? 0, total: g.training?.total ?? 0, avgSpeed: avg * 3.6, newBest },
+        () => this.start('training'), () => this.toMenu());
+    }, 1400);
   }
 
   _onDeath(e) {
@@ -129,9 +256,12 @@ export class Game {
     const p = g.player;
     const cause = { eaten: 'YOU WERE EATEN', impact: 'YOU HIT THE GROUND TOO HARD', struck: 'CRUSHED BY A TITAN', fell: 'YOU FELL' }[e.cause] || 'YOU DIED';
     g.audio?.setMusic?.(0.1);
+    const run = this.run, mode = g.mode;
     setTimeout(() => {
-      g.input.unlock();
-      g.hud?.showDeath?.({ cause, kills: p.stats.kills, score: this.score, time: Math.round(g.time - (this.startTime || 0)), wave: this.wave, topSpeed: Math.round(p.stats.topSpeed * 3.6) }, () => this.start(g.mode === 'free' ? 'free' : 'expedition'));
+      if (this.run !== run) return;
+      g.input.unlock?.();
+      g.hud?.showDeath?.({ cause, kills: p.stats.kills, score: this.score, time: Math.round(g.time - (this.startTime || 0)), wave: this.wave, topSpeed: Math.round(p.stats.topSpeed * 3.6) },
+        () => this.start(mode === 'menu' ? 'expedition' : mode), () => this.toMenu());
     }, e.cause === 'eaten' ? 1400 : 900);
   }
 
@@ -148,21 +278,40 @@ export class Game {
     const g = this.g;
     this.comboT -= dt;
     if (this.comboT <= 0) this.combo = 1;
+    this._tutorial(dt);
     if (g.mode === 'expedition' && g.player.alive) {
-      const alive = (g.titans?.titans || []).filter((t) => t.alive && t.kind !== 'colossal').length;
+      const ts = g.titans?.titans || [];
+      const alive = ts.filter((t) => t.alive && t.kind !== 'colossal').length;
+      const colossalUp = ts.some((t) => t.kind === 'colossal' && t.alive);
       if (this.waveClear > 0) {
         this.waveClear -= dt;
         if (this.waveClear <= 0) this._nextWave();
-      } else if (alive === 0 && !(this.colossalSpawned && this.wave === 3 && (g.titans?.titans || []).some((t) => t.kind === 'colossal' && t.alive))) {
+      } else if (alive === 0 && !(this.colossalSpawned && colossalUp)) {
         if (this.wave > 0) g.hud?.message?.(`WAVE ${this.wave} CLEARED`, 2.5, 'info');
         this.waveClear = 4;
       }
     }
+    if (g.mode === 'training' && g.trainingActive && this.trainEnd == null && (g.training?.remaining ?? 1) === 0) this._finishTraining();
+  }
+
+  timer() {
+    const g = this.g;
+    if (g.mode !== 'training' || this.trainStart == null) return null;
+    return (this.trainEnd ?? g.time) - this.trainStart;
+  }
+  trainingTargets() {
+    const g = this.g;
+    if (g.mode !== 'training' || !g.training) return null;
+    return { left: g.training.remaining, total: g.training.total };
   }
 
   objective() {
     const g = this.g;
-    if (g.mode === 'free') return 'FREE FLIGHT · fly through the Forest of Giant Trees · supply depots refill you';
+    if (g.mode === 'free') return 'FREE FLIGHT · fly the Forest of Giant Trees · supply depots refill you';
+    if (g.mode === 'training') {
+      const best = parseFloat(store.get('wof.trainingBest'));
+      return `TRAINING GROUNDS · cut every dummy's nape${best > 0 ? ` · best ${best.toFixed(1)} s` : ''}`;
+    }
     if (g.mode !== 'expedition') return '';
     const alive = (g.titans?.titans || []).filter((t) => t.alive).length;
     if (this.waveClear > 0 && this.wave > 0) return `Wave ${this.wave} cleared · next wave incoming`;

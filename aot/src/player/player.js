@@ -25,6 +25,10 @@ export class Player {
     this.forward = new THREE.Vector3(0, 0, 1);
     this.bodyUp = new THREE.Vector3(0, 1, 0);
     this.aim = { valid: false, point: new THREE.Vector3(), distance: 0, lockTitan: false, collider: null, dir: new THREE.Vector3() };
+    // auto-targeted anchor for each rope (0 = Z / left, 1 = X / right), rescanned alternately every frame
+    this.targets = [0, 1].map(() => ({ valid: false, point: new THREE.Vector3(), collider: null, titan: null, distance: 0, age: 0 }));
+    this._scanSide = 0;
+    this._anchorTmp = [];
     this._origins = [new THREE.Vector3(), new THREE.Vector3()];
     this.reset(new THREE.Vector3(0, 50.6, 0), 0);
   }
@@ -41,7 +45,9 @@ export class Player {
     this.dashCd = 0; this.boosting = false; this.boostLevel = 0; this.spaceHeld = 0;
     this.stun = 0; this.grabbedBy = null; this.grabHand = null; this.struggle = 0; this.grabImmune = 0;
     this.reelLevel = 0; this.impactCooldown = 0;
-    this.wishF = 0; this.wishR = 0; this.wantBoost = false; this._dashPuff = 0;
+    this.wishF = 0; this.wishR = 0; this.turn = 0; this.wantBoost = false; this._dashPuff = 0;
+    this.shiftHeld = 0; this.payout = false; this.mouseT = 99; this.autoSwapT = 0; this.primeT = 0; this.prey = null; this.preyDist = 1e9; this.swooping = false;
+    if (this.targets) for (const t of this.targets) { t.valid = false; t.collider = null; t.titan = null; }
     this.odm.reset();
     this.cam.pos.copy(position).add(new THREE.Vector3(Math.sin(yaw) * -5, 2, Math.cos(yaw) * -5));
     this.landed = 0;
@@ -51,14 +57,24 @@ export class Player {
   get speed() { return this.vel.length(); }
 
   // ---------------------------------------------------------------- input (once per frame)
+  // Keyboard-first: arrows (or WASD) move and steer, Z / X fire the left / right rope at the auto-targeted
+  // anchor, Shift is gas (tap on the ground to jump), Space cuts. The mouse is optional (click to look).
   handleInput(input, dt) {
     if (!this.alive) return;
-    const sens = CFG.cam.sens * (this.game.settings?.sens ?? 1);
-    this.yaw -= input.mouseDX * sens;
-    this.pitch = THREE.MathUtils.clamp(this.pitch - input.mouseDY * sens * (this.game.settings?.invertY ? -1 : 1), -1.45, 1.45);
+    if (input.mouseDX || input.mouseDY) {
+      const sens = CFG.cam.sens * (this.game.settings?.sens ?? 1);
+      this.yaw -= input.mouseDX * sens;
+      this.pitch = THREE.MathUtils.clamp(this.pitch - input.mouseDY * sens * (this.game.settings?.invertY ? -1 : 1), -1.45, 1.45);
+      this.mouseT = 0;
+    } else this.mouseT += dt;
+
+    const k = (a, b) => input.held(a) || input.held(b);
+    const F = k('ArrowUp', 'W') ? 1 : 0, B = k('ArrowDown', 'S') ? 1 : 0;
+    const L = k('ArrowLeft', 'A') ? 1 : 0, R = k('ArrowRight', 'D') ? 1 : 0;
+    const cut = input.hit('Space') || input.hit('Mouse0');
 
     if (this.grabbedBy) {
-      if (input.hit('Mouse0') || input.hit('Space')) {
+      if (cut) {
         this.struggle += CFG.combat.grabEscapePerPress * (this.blade > 0 ? 1 : 0.55);
         this.game.audio?.slash?.(true);
         this.slashT = 0;
@@ -67,55 +83,77 @@ export class Player {
       return;
     }
 
-    // anchors: Q = left, E = right, right mouse = both
-    const both = input.held('Mouse2');
-    const wantL = input.held('Q') || both, wantR = input.held('E') || both;
-    const fireL = input.hit('Q') || input.hit('Mouse2'), fireR = input.hit('E') || input.hit('Mouse2');
+    // steering: the arrows turn your heading; the camera rides behind it
+    this.turn = R - L;
+    const anchored = this.odm.attachedCount();
+    const rate = this.grounded && !anchored ? CFG.keys.turnGround : anchored ? CFG.keys.turnRope : CFG.keys.turnAir;
+    this.yaw -= this.turn * rate * dt;
+    this.wishF = F - B; this.wishR = this.turn;
+    this.payout = B > 0 && anchored > 0 && !this.grounded;   // ↓ on a rope: stop the winch, let the wire out
+
+    // ropes: Z = left, X = right (Q / E and the mouse buttons still work for mouse players)
+    const wantL = input.held('Z') || input.held('Q') || input.held('Mouse2');
+    const wantR = input.held('X') || input.held('E') || input.held('Mouse2');
+    const fireL = input.hit('Z') || input.hit('Q') || input.hit('Mouse2');
+    const fireR = input.hit('X') || input.hit('E') || input.hit('Mouse2');
     if (this.stun <= 0) {
-      if (fireL) this._fire(0, both && fireR);
-      if (fireR) this._fire(1, both && fireL);
+      if (fireL) this._fire(0, wantR);
+      if (fireR) this._fire(1, wantL);
     }
+    const wasAnchored = anchored;
     if (!wantL) this.odm.release(0);
     if (!wantR) this.odm.release(1);
+    // letting go at speed flicks you up a little: the anime's release-and-fly
+    if (wasAnchored && !this.odm.attachedCount() && !this.grounded && this.speed > 20) this.vel.y += CFG.keys.releaseLift;
 
-    // gas dash
-    if (input.hit('ShiftLeft') || input.hit('ShiftRight')) this._dash(input);
-
-    // kick off a trunk / wall you are clinging to
-    if (input.hit('Space') && this.wallTime > 0 && this.wallN && !this.grounded) {
-      this.vel.addScaledVector(this.wallN, 9).y += 6;
+    // gas: Shift. Tap on the ground = jump; clinging to a trunk = kick off; held = boost
+    const shiftHit = input.hit('ShiftLeft') || input.hit('ShiftRight');
+    const shiftHeld = input.held('ShiftLeft') || input.held('ShiftRight');
+    if (shiftHit && this.wallTime > 0 && this.wallN && !this.grounded) {
+      this.vel.addScaledVector(this.wallN, 10).y += 7;
       this.odm.releaseAll();
       this.wallTime = 0;
       this.game.audio?.land?.(0.3);
-    }
-    // jump on ground
-    if (input.hit('Space') && this.groundTime < CFG.ground.coyote + 0.01 && this.grounded) {
+    } else if (shiftHit && this.grounded && this.groundTime < CFG.ground.coyote + 0.01) {
       this.vel.y = Math.max(this.vel.y, CFG.ground.jump);
+      if (F) { const f = this._heading(_e); this.vel.addScaledVector(f, 3); }
       this.grounded = false; this.groundTime = 1;
       this.spaceHeld = 0;
     }
-    this.spaceHeld = input.held('Space') ? this.spaceHeld + dt : 0;
+    this.spaceHeld = shiftHeld ? this.spaceHeld + dt : 0;
+    this.wantBoost = shiftHeld;
+    if (input.hit('C')) this._dash(input);
 
-    // blades
+    // blades: Space cuts, held at speed in the air = Levi's spinning slash; dull blades swap themselves
     if (input.hit('R')) this._swapBlades();
-    if (input.hit('Mouse0') && this.swapT <= 0) this._slash();
-    this.spin = input.held('Mouse0') && !this.grounded && this.speed > CFG.combat.spinMinSpeed && this.blade > 0 && this.swapT <= 0 && (this.slashT < 0 || this.slashT > 0.15);
-
-    // wish direction (camera-relative)
-    const f = input.held('W') ? 1 : 0, b = input.held('S') ? 1 : 0, l = input.held('A') ? 1 : 0, r = input.held('D') ? 1 : 0;
-    this.wishF = f - b; this.wishR = r - l;
-    this.wantBoost = input.held('Space');
+    if (cut && this.swapT <= 0) {
+      // swooping in on a nape: Space primes the cut and the blades fire the moment you reach it
+      if (this.swooping && this.preyDist < CFG.combat.primeRange) this.primeT = CFG.combat.primeTime;
+      else this._slash();
+    }
+    const cutHeld = input.held('Space') || input.held('Mouse0');
+    this.spin = cutHeld && !this.grounded && this.speed > CFG.combat.spinMinSpeed && this.blade > 0 && this.swapT <= 0 && (this.slashT < 0 || this.slashT > 0.15);
+    if (this.blade <= 0 && this.spares > 0 && this.swapT <= 0) {
+      this.autoSwapT += dt;
+      if (this.autoSwapT > 0.25) { this.autoSwapT = 0; this._swapBlades(); }
+    } else this.autoSwapT = 0;
   }
+
+  /** Horizontal heading (unit) into out. */
+  _heading(out) { return out.set(Math.sin(this.yaw), 0, Math.cos(this.yaw)); }
+  /** Heading-right (unit) into out. */
+  _right(out) { return out.set(-Math.cos(this.yaw), 0, Math.sin(this.yaw)); }
 
   _camBasis() {
     const cy = Math.cos(this.yaw), sy = Math.sin(this.yaw), cp = Math.cos(this.pitch), sp = Math.sin(this.pitch);
     _a.set(sy * cp, sp, cy * cp); // look forward
     return _a;
   }
-  /** Horizontal camera-relative wish direction (unit or zero) into out. */
+  /** Horizontal wish direction (unit or zero): along the heading, plus a sideways pull while turning. */
   _wish(out) {
     const sy = Math.sin(this.yaw), cy = Math.cos(this.yaw);
-    out.set(sy * this.wishF - cy * this.wishR, 0, cy * this.wishF + sy * this.wishR);
+    const side = this.grounded ? 0 : this.wishR * 0.8;
+    out.set(sy * this.wishF - cy * side, 0, cy * this.wishF + sy * side);
     const l = out.length();
     return l > 0 ? out.multiplyScalar(1 / l) : out;
   }
@@ -128,21 +166,124 @@ export class Player {
 
   _fire(side, twin) {
     const o = _b.copy(this.pos);
+    let T = this.targets[side];
+    const O = this.targets[1 - side];
+    // only one side has a target (e.g. Z + X with trees on one side): both ropes go there, splayed a little;
+    // and with both held, a titan on either side takes both ropes
+    if ((!T.valid && twin && O.valid) || (twin && O.valid && O.titan && !T.titan)) T = O;
+    // both held with two different titans in view: both ropes take the nearer one
+    else if (twin && T.valid && O.valid && T.titan && O.titan && T.titan !== O.titan && O.distance < T.distance) T = O;
     let target = null;
-    if (this.aim.valid) {
-      target = _c.copy(this.aim.point);
-      if (twin) {
-        // splay the pair a little either side of the aim point, but keep both on the same surface if possible
-        const right = _d.crossVectors(this.aim.dir, UP).normalize();
-        const off = this.aim.distance * CFG.hook.spread * (side ? 1 : -1);
-        const alt = this.game.collision.raycast(this.cam.pos, _e.copy(this.aim.point).addScaledVector(right, off).sub(this.cam.pos).normalize(), CFG.hook.range + 15, { hookableOnly: true });
-        if (alt && alt.point.distanceTo(this.pos) < CFG.hook.range) target.copy(alt.point);
+    const dir = this.aim.dir;
+    if (T.valid) {
+      target = _c.copy(T.point);
+      if (T === this.targets[1 - side] && !T.titan) target.addScaledVector(this._right(_d), (side ? 1 : -1) * 1.2);
+      dir.subVectors(target, o).normalize();
+    } else {
+      // nothing in range: fire ahead-and-up on that side anyway (it will miss and wind back)
+      this._heading(dir).addScaledVector(this._right(_d), side ? 0.5 : -0.5).setY(0.7).normalize();
+      this.game.events.emit('hook:none', { side });
+    }
+    if (this.odm.fire(side, o, target, dir) && this.game.fx?.gas) {
+      this.launcher(side, _e); this.game.fx.gas(_e, dir, 0.3);
+    }
+  }
+
+  /**
+   * Auto-targeting for one rope. Candidate anchor points come straight from the geometry around you (the side
+   * of each trunk facing you at a height above you, the nearest stretch of each branch, the nearest face of
+   * each building or wall, the shoulders of titans and dummies). Each is scored by distance (sweet spot ~40 m),
+   * height above you (a swing needs an anchor overhead), how well it lies along where you are going, and which
+   * side it is on; the best few are confirmed by line of sight. The previous pick wins ties, so markers hold still.
+   */
+  _scan(side) {
+    const T = this.targets[side];
+    const col = this.game.collision, p = this.render;
+    const sgn = side === 0 ? -1 : 1;
+    const fwd = this._heading(_a), right = this._right(_b);
+    const v = this.vel, hs = Math.hypot(v.x, v.z);
+    const ax = hs > 8 ? v.x / hs : fwd.x, az = hs > 8 ? v.z / hs : fwd.z;
+    const range = CFG.hook.range - 3;
+    const gy = col.groundHeight(p.x, p.z);
+    // the height we'd like to anchor at: above us, lower when we're already high over the canopy
+    const wantY = p.y + (p.y - gy > 80 ? -10 : this.grounded ? 16 : 12 + THREE.MathUtils.clamp(-v.y * 0.3, -6, 10));
+    const cands = this._cands || (this._cands = []);
+    let n = 0;
+    const push = (x, y, z, c, titan) => {
+      const dx = x - p.x, dy = y - p.y, dz = z - p.z;
+      const d = Math.hypot(dx, dy, dz);
+      if (d < (titan ? 2.5 : 7) || d > range) return;
+      const dl = Math.hypot(dx, dz) || 1e-6;
+      const ahead = (dx * ax + dz * az) / dl;
+      if (ahead < -0.35) return;                                        // never behind you
+      const lateral = ((dx * right.x + dz * right.z) / dl) * sgn;          // > 0: on this rope's side
+      const sd = 1 - Math.min(1, Math.abs(d - 40) / 60);
+      const sh = this.grounded ? THREE.MathUtils.clamp((dy - 3) / 18, 0, 1) : THREE.MathUtils.clamp((dy + 10) / 30, 0, 1);
+      let score = sd + sh * 1.2 + (ahead + 1) * 0.8 + THREE.MathUtils.clamp(lateral, titan ? 0 : -0.6, 0.6) * 1.3;
+      // titans (and training dummies) are the point: within reach and roughly ahead they win outright
+      if (titan) score += 1.6 + (ahead > 0.5 ? 0.4 : 0);
+      if (T.valid && (x - T.point.x) ** 2 + (y - T.point.y) ** 2 + (z - T.point.z) ** 2 < 25) score += 0.35;
+      let o = cands[n];
+      if (!o) o = cands[n] = { p: new THREE.Vector3(), c: null, t: null, s: 0 };
+      o.p.set(x, y, z); o.c = c; o.t = titan; o.s = score; n++;
+    };
+    _c.set(p.x + ax * 12, wantY, p.z + az * 12);   // a point ahead and above: the "ideal" anchor
+    for (const c of col.querySphere(p, range)) {
+      if (!c.hookable) continue;
+      if (c.type === 'cylinder') {
+        if (c.y1 - c.y0 < 4 && c.r < 1.5) continue;   // cannons, barrels, posts: useless to swing from
+        let dx = p.x - c.x, dz = p.z - c.z; const l = Math.hypot(dx, dz) || 1; dx /= l; dz /= l;
+        const y = THREE.MathUtils.clamp(wantY, c.y0 + 1.5, c.y1 - 1);
+        push(c.x + dx * c.r, y, c.z + dz * c.r, c, null);
+      } else if (c.type === 'capsule') {
+        _d.subVectors(c.b, c.a);
+        const t = THREE.MathUtils.clamp(_e.subVectors(_c, c.a).dot(_d) / Math.max(_d.lengthSq(), 1e-6), 0, 1);
+        _e.copy(c.a).addScaledVector(_d, t);
+        _d.subVectors(p, _e).normalize();
+        push(_e.x + _d.x * c.r, _e.y + _d.y * c.r, _e.z + _d.z * c.r, c, null);
+      } else if (c.type === 'box') {
+        // closest point of the box to the ideal point, nudged onto the face that looks at you
+        _e.subVectors(_c, c.center);
+        let px = c.center.x, py = c.center.y, pz = c.center.z;
+        for (let i = 0; i < 3; i++) {
+          const ax2 = c.axes[i], h = i === 0 ? c.half.x : i === 1 ? c.half.y : c.half.z;
+          const k = THREE.MathUtils.clamp(_e.dot(ax2), -h, h);
+          px += ax2.x * k; py += ax2.y * k; pz += ax2.z * k;
+        }
+        if (Math.min(c.half.x, c.half.y, c.half.z) < 0.25 && py < p.y) continue;   // thin slabs below you: skip
+        if (c.half.x < 1.2 && c.half.y < 1.2 && c.half.z < 1.2) continue;            // crates and props
+        push(px, py, pz, c, null);
+      } else if (c.type === 'sphere') {
+        _d.subVectors(p, c.center).normalize();
+        push(c.center.x + _d.x * c.r, c.center.y + _d.y * c.r, c.center.z + _d.z * c.r, c, null);
       }
     }
-    const fallback = this.aim.dir;
-    if (this.odm.fire(side, o, target, fallback) && this.game.fx?.gas) {
-      this.launcher(side, _e); this.game.fx.gas(_e, fallback, 0.3);
+    // titans and training dummies: their shoulders / upper back, where Survey Corps anchor to reach the nape
+    for (const t of this.game.targetList?.() || []) {
+      if (!t.alive || !t.position || t.position.distanceToSquared(p) > (range + 25) ** 2) continue;
+      const pts = this._anchorTmp; pts.length = 0;
+      if (t.anchors) t.anchors(pts);
+      else { const nw = t.napeWorld?.(); if (nw?.center) pts.push(nw.center); }
+      for (const a of pts) push(a.x, a.y, a.z, null, t);
     }
+    // best first; confirm line of sight on the top few
+    const list = cands.slice(0, n).sort((x, y) => y.s - x.s);
+    let found = null;
+    for (let i = 0; i < Math.min(list.length, 7); i++) {
+      const o = list[i];
+      _d.subVectors(o.p, p); const dl = _d.length(); _d.multiplyScalar(1 / dl);
+      const hit = col.raycast(p, _d, dl + 2.5, { hookableOnly: true });
+      if (!hit || hit.collider.type === 'ground' || hit.distance < (o.t ? 2 : 6)) continue;
+      const same = o.c ? hit.collider === o.c : (hit.collider.userData?.titan === o.t || hit.collider.userData?.dummy === o.t || hit.point.distanceTo(o.p) < 3);
+      if (!same && hit.point.distanceTo(o.p) > 4) continue;
+      found = { hit, titan: o.t || hit.collider.userData?.titan || null };
+      break;
+    }
+    T.age += 1;
+    if (found) {
+      T.valid = true; T.point.copy(found.hit.point); T.collider = found.hit.collider; T.titan = found.titan;
+      T.distance = found.hit.distance; T.age = 0;
+    } else if (T.age > 2) { T.valid = false; T.collider = null; T.titan = null; }
   }
 
   _dash(input) {
@@ -166,7 +307,7 @@ export class Player {
 
   _slash() {
     if (this.slashT >= 0 && this.slashT < CFG.combat.slashTime * 0.7) return;
-    this.slashT = 0; this.slashHit = false;
+    this.slashT = 0; this.slashHit = false; this._arcShown = false;
     this.game.audio?.slash?.(false);
   }
 
@@ -195,17 +336,65 @@ export class Player {
     const groundedNow = this.grounded;
     this.boosting = this.wantBoost && hasGas && this.stun <= 0 && (!groundedNow || this.spaceHeld > 0.16 || anchored > 0);
 
-    // winch
-    this.reelLevel = this.stun > 0 ? 0 : odm.reelAccel(p, v, this.boosting, acc);
+    // winch (↓ on a rope stops it and pays the wire out for a longer, lower swing)
+    odm.payout = this.payout ? CFG.keys.payout : 0;
+    this.reelLevel = this.payout || this.stun > 0 ? 0 : odm.reelAccel(p, v, this.boosting, acc);
     if (anchored && !this.infiniteGas) odm.gas -= CFG.gas.reelRate * anchored * dt * (this.boosting ? 2 : 1);
+
+    // roped to a titan: the swoop. The gear carries you round behind the neck and straight through the nape at
+    // cutting speed (how Survey Corps take a titan down, and the keyboard player's assist). Ropes on anything
+    // else go slack meanwhile so they don't hold you back.
+    let prey = null;
+    for (const hk of odm.hooks) {
+      const t = hk.attached ? hk.collider?.userData?.titan || hk.collider?.userData?.dummy : null;
+      if (t && t.alive && t.napeWorld) { prey = t; break; }
+    }
+    this.swooping = false; this.prey = prey; this.preyDist = 1e9;
+    if (prey) {
+      const nw = prey.napeWorld();
+      const close = nw?.center && p.distanceTo(nw.center) < CFG.combat.swoopRange;
+      // other ropes go slack; the titan's own rope runs free once the swoop takes over (it only steadies you)
+      for (const hk of odm.hooks) {
+        const mine = hk.collider?.userData?.titan === prey || hk.collider?.userData?.dummy === prey;
+        hk.payout = hk.attached && (!mine || close) ? 40 : 0;
+      }
+      if (nw?.center) {
+        const nrm = nw.normal || UP;
+        const dN = p.distanceTo(nw.center);
+        this.preyDist = dN;
+        if (dN < CFG.combat.swoopRange) {
+          this.swooping = true;
+          // three legs: from in front, swing out beside the head; then come round behind the neck; then cut
+          // straight through the nape. (Flying straight at it from the front would only hit the face.)
+          const rx = p.x - nw.center.x, ry = p.y - nw.center.y, rz = p.z - nw.center.z;
+          const along = rx * nrm.x + ry * nrm.y + rz * nrm.z;              // > 0: behind the neck
+          const rt = _a.crossVectors(UP, nrm);
+          if (rt.lengthSq() < 1e-4) rt.set(1, 0, 0); rt.normalize();
+          const side = rx * rt.x + rz * rt.z;
+          const R = Math.max(3, (prey.height || 8) * 0.35);
+          const aim = _e.copy(nw.center);
+          if (along < 1.2) aim.addScaledVector(rt, (side >= 0 ? 1 : -1) * R).addScaledVector(nrm, 2).y += 1.5;
+          else if (dN > 5) aim.addScaledVector(nrm, Math.min(6, dN * 0.4)).y += 0.5;
+          else aim.addScaledVector(nrm, -2.5);
+          aim.sub(p);
+          const S = this.boosting ? CFG.combat.swoopBoost : CFG.combat.swoop;
+          aim.normalize().multiplyScalar(S).sub(v).multiplyScalar(CFG.combat.swoopGain);
+          const al = aim.length();
+          if (al > CFG.combat.swoopMax) aim.multiplyScalar(CFG.combat.swoopMax / al);
+          acc.add(aim);
+          acc.y += CFG.gravity * 0.6;   // the wires hold most of your weight through the swoop
+        }
+      }
+    } else for (const hk of odm.hooks) hk.payout = 0;
 
     // gas thrust
     const wish = this._wish(_b);
     if (this.boosting) {
-      const look = this._camBasis();
-      const dir = _c.copy(wish.lengthSq() > 0 ? wish : look);
-      if (wish.lengthSq() > 0 && this.wishF > 0) dir.y = look.y; // W boosts where you look
-      if (wish.lengthSq() > 0 && this.wishF <= 0) dir.y = Math.max(0, look.y) * 0.5;
+      // thrust along the heading (a little lift so you don't plough into the ground); on a rope, along the swing
+      const dir = _c;
+      if (anchored && speed > 8) dir.copy(v).multiplyScalar(1 / speed).addScaledVector(this._heading(_e), 0.6);
+      else { this._heading(dir).multiplyScalar(this.wishF < 0 ? -0.4 : 1); dir.y = 0.22 + Math.max(0, this.pitch) * 0.8; }
+      if (this.turn) dir.addScaledVector(this._right(_e), this.turn * 0.45);
       dir.normalize();
       acc.addScaledVector(dir, anchored ? CFG.gas.hookedBoostAccel : CFG.gas.boostAccel);
       if (!this.infiniteGas) odm.gas -= CFG.gas.boostRate * dt;
@@ -215,7 +404,7 @@ export class Player {
     if (groundedNow && !anchored) {
       // running: accelerate toward the wish velocity, skid off excess speed
       const n = this.groundN;
-      const target = _c.copy(wish).multiplyScalar(CFG.ground.run * (this.stun > 0 ? 0.3 : 1));
+      const target = _c.copy(wish).multiplyScalar(CFG.ground.run * (this.stun > 0 ? 0.3 : 1) * (this.wishF < 0 ? 0.45 : 1));
       const hv = _e.set(v.x, 0, v.z);
       const hs = hv.length();
       if (hs > CFG.ground.run + 0.5 && wish.dot(hv) > 0) {
@@ -230,10 +419,12 @@ export class Player {
       // stick to slopes
       acc.addScaledVector(n, -2);
     } else if (anchored) {
-      // pump the swing: steer perpendicular to the wire(s)
+      // pump the swing: ↑ drives along the heading, ← → swing you around the anchor (perpendicular to the wire)
       const pd = odm.pullDir(p, _c);
-      if (pd && wish.lengthSq() > 0) {
-        const w = _e.copy(wish);
+      if (pd && (this.wishF > 0 || this.turn)) {
+        const w = _e.set(0, 0, 0);
+        if (this.wishF > 0) this._heading(w);
+        if (this.turn) w.addScaledVector(this._right(_a), this.turn * 1.2);
         w.addScaledVector(pd, -w.dot(pd));
         acc.addScaledVector(w, CFG.air.pump);
       }
@@ -271,8 +462,22 @@ export class Player {
     this.wallN = null;
     for (let i = 0; i < n; i++) {
       p.addScaledVector(v, h);
-      odm.constrain(p, v);
+      odm.constrain(p, v, h);
       if (this._contacts(p, v, dt)) groundedStep = true;
+    }
+    // auto-vault: running into something waist-high (a parapet, rubble, a cart) hops you over it
+    if (groundedStep && this.wallN && this.wishF > 0 && !anchored && this.stun <= 0) {
+      const f = this._heading(_c);
+      if (this.wallN.dot(f) < -0.5) {
+        _e.copy(p).addScaledVector(f, 0.9).y += 1.9;
+        const top = this.game.collision.raycast(_e, _a.set(0, -1, 0), 2.6, { dynamic: false });
+        const rise = top ? top.point.y - (p.y - CFG.radius) : 0;
+        if (top && top.normal.y > 0.7 && rise > 0.25 && rise < 1.8) {
+          v.y = Math.max(v.y, Math.sqrt(2 * CFG.gravity * (rise + 0.45)));
+          v.addScaledVector(f, 2.5);
+          groundedStep = false; this.grounded = false; this.groundTime = 1;
+        }
+      }
     }
     if (groundedStep && this.airTime > 0.35) this._landT = Math.min(1, (this._preLandSpeed || 0) / 30) + 0.001;
     this._preLandSpeed = v.length();
@@ -418,24 +623,42 @@ export class Player {
 
     // blades & combat
     if (this.slashT >= 0) {
+      // the blades are live for most of the sweep: the first nape/limb they meet in that window is cut
       this.slashT += dt;
-      if (!this.slashHit && this.slashT > CFG.combat.slashTime * 0.3) { this.slashHit = true; this._strike(CFG.combat.reach + speed * 0.025, false); }
-      if (this.slashT > CFG.combat.slashTime) this.slashT = -1;
+      const st = CFG.combat.slashTime;
+      if (!this.slashHit && this.slashT > st * 0.15 && this.slashT < st * 0.85) {
+        if (this._strike(CFG.combat.reach + speed * 0.025, false, !this._arcShown)) this.slashHit = true;
+        this._arcShown = true;
+      }
+      if (this.slashT > st) this.slashT = -1;
+    }
+    if (this.primeT > 0) {
+      this.primeT -= dt;
+      const nw = this.prey?.alive ? this.prey.napeWorld?.() : null;
+      if (!nw?.center) this.primeT = 0;
+      else if (nw.center.distanceTo(this.render) < CFG.combat.reach + 1.4 + speed * 0.02) { this.primeT = 0; this._slash(); }
+      else if (this.primeT <= 0) this._slash();   // never reached it: swing anyway
     }
     if (this.spin) {
       this.spinT += dt;
       if (this.spinT > CFG.combat.spinInterval) { this.spinT = 0; this._strike(CFG.combat.reach + 1 + speed * 0.02, true); }
     } else this.spinT = CFG.combat.spinInterval;
 
-    // aim: ray from the camera through the crosshair, with a little magnetism toward hookable surfaces
-    this._updateAim();
+    // rope auto-targets (one side per frame) and the legacy aim summary for the HUD
+    this._scanSide ^= 1;
+    this._scan(this._scanSide);
+    const tL = this.targets[0], tR = this.targets[1];
+    const tb = tL.valid && (!tR.valid || tL.distance <= tR.distance) ? tL : tR;
+    this.aim.valid = tL.valid || tR.valid;
+    if (this.aim.valid) { this.aim.point.copy(tb.point); this.aim.distance = tb.distance; this.aim.collider = tb.collider; }
+    this.aim.lockTitan = !!(tL.titan || tR.titan);
 
     // body orientation for the model
     const anchored = this.odm.attachedCount();
     const tf = _a;
     if (this.grounded && !anchored) {
       tf.set(v.x, 0, v.z);
-      if (tf.lengthSq() < 0.5) tf.set(Math.sin(this.yaw), 0, Math.cos(this.yaw));
+      if (tf.lengthSq() < 0.5 || this.wishF < 0) tf.set(Math.sin(this.yaw), 0, Math.cos(this.yaw));
     } else if (speed > 2.5) {
       // fly along the velocity, but never a pure vertical dive: keep a heading so the pose stays readable
       tf.copy(v).multiplyScalar(1 / speed).addScaledVector(_e.set(Math.sin(this.yaw), 0, Math.cos(this.yaw)), anchored ? 0.25 : 0.55);
@@ -495,44 +718,18 @@ export class Player {
     this._supply(dt);
   }
 
-  _updateAim() {
-    const cam = this.game.camera;
-    const dir = this.aim.dir.set(0, 0, -1).applyQuaternion(cam.quaternion);
-    const col = this.game.collision;
-    const range = CFG.hook.range;
-    const camToBody = cam.position.distanceTo(this.render);
-    let hit = col.raycast(cam.position, dir, range + camToBody + 5, { hookableOnly: true });
-    const ok = (h) => h && h.point.distanceTo(this.render) <= range && h.distance > camToBody * 0.6;
-    if (!ok(hit)) {
-      // magnetism: probe a small cone and take the nearest-to-centre valid surface
-      let best = null, bestAng = 1e9;
-      const right = _c.crossVectors(dir, UP).normalize(), up = _d.crossVectors(right, dir).normalize();
-      for (const ring of [0.035, 0.07]) for (let i = 0; i < 8; i++) {
-        const t = (i / 8) * Math.PI * 2;
-        const d2 = _e.copy(dir).addScaledVector(right, Math.cos(t) * ring).addScaledVector(up, Math.sin(t) * ring).normalize();
-        const hh = col.raycast(cam.position, d2, range + camToBody + 5, { hookableOnly: true });
-        if (ok(hh) && ring + i * 1e-4 < bestAng) { best = hh; bestAng = ring + i * 1e-4; }
-      }
-      if (best) hit = best;
-    }
-    const valid = ok(hit);
-    this.aim.valid = valid;
-    if (valid) { this.aim.point.copy(hit.point); this.aim.distance = hit.point.distanceTo(this.render); this.aim.collider = hit.collider; }
-    else { this.aim.distance = hit ? hit.point.distanceTo(this.render) : Infinity; this.aim.collider = null; }
-    this.aim.lockTitan = !!(valid && hit.collider?.userData?.titan);
-  }
-
-  _strike(radius, spin) {
-    if (this.blade <= 0 || this.swapT > 0) { if (!spin) this.game.audio?.bladeBreak?.(); return; }
-    const titans = this.game.titans;
-    if (!titans?.hitTest) return;
-    // reach forward along the motion (or the camera), generous like the anime's blur of steel
-    const look = this._camBasis();
+  /** One blade check. Returns true if anything was hit. */
+  _strike(radius, spin, showArc = true) {
+    if (this.blade <= 0 || this.swapT > 0) { if (!spin && showArc) this.game.audio?.bladeBreak?.(); return false; }
+    const hitTest = this.game.hitTest;
+    if (!hitTest) return false;
+    // reach forward along the motion (or the heading), generous like the anime's blur of steel
+    const look = this._heading(_a);
     const dir = this.speed > 6 ? _b.copy(this.vel).normalize().lerp(look, 0.35).normalize() : _b.copy(look);
     const center = _c.copy(this.render).addScaledVector(dir, spin ? 0.6 : 1.3);
     // the blades find the nape: if one is within reach, strike it (anime precision at full speed)
     let bestNape = null, bestD = radius + 2.2;
-    for (const t of titans.titans || []) {
+    for (const t of this.game.targetList?.() || []) {
       if (!t.alive || !t.napeWorld) continue;
       const nw = t.napeWorld();
       if (!nw?.center) continue;
@@ -540,12 +737,12 @@ export class Player {
       if (d < bestD) { bestD = d; bestNape = nw.center; }
     }
     if (bestNape) center.copy(bestNape);
-    if (this.game.fx?.slashArc && (!spin || Math.random() < 0.5)) {
+    if (showArc && this.game.fx?.slashArc && (!spin || Math.random() < 0.5)) {
       _q.copy(this.game.camera.quaternion).multiply(_q2.setFromAxisAngle(_a.set(0, 0, 1), (Math.random() - 0.5) * 1.6));
       this.game.fx.slashArc(_e.copy(this.render).addScaledVector(dir, 1.1), _q, radius * 0.7);
     }
-    const hits = titans.hitTest(center, radius);
-    if (!hits || !hits.length) return;
+    const hits = hitTest(center, radius);
+    if (!hits || !hits.length) return false;
     // best part: nape > eye > ankle > others
     const rank = { nape: 5, eye: 4, ankle: 3, hand: 2, arm: 2, body: 1 };
     const seen = new Set();
@@ -558,20 +755,34 @@ export class Player {
       const sharp = 0.55 + 0.45 * this.blade;
       const damage = Math.round((CFG.combat.dmgBase + rel * CFG.combat.dmgPerMs) * sharp * (spin ? 1.1 : 1));
       const res = hit.titan.applyHit({ part: hit.part, damage, point: hit.point.clone(), dir: dir.clone() }) || {};
-      this.blade = Math.max(0, this.blade - CFG.combat.wear * (hit.part === 'nape' ? 1 : 0.7));
+      this.blade = Math.max(0, this.blade - CFG.combat.wear * (hit.part === 'nape' ? 1 : 0.35));
       this.game.audio?.slash?.(true);
       this.game.fx?.blood?.(hit.point, dir, res.killed ? 2 : 1);
       this.game.events.emit('player:hit', { titan: hit.titan, part: hit.part, damage, result: res, point: hit.point.clone() });
       this.stats.damage += damage;
       if (this.blade <= 0) { this.game.audio?.bladeBreak?.(); this.game.events.emit('player:bladeBroken', {}); }
       this.cam.trauma = Math.min(1, this.cam.trauma + (res.killed ? 0.5 : 0.2));
-      if (res.killed) this.game.hitstop = 0.07;
+      if (res.killed) { this.game.hitstop = 0.06; this.game.slowmo = 0.4; }
     }
+    return true;
   }
 
   _camera(dt) {
     const cam = this.game.camera, c = this.cam;
     const speed = this.speed;
+    // keyboard camera: in the air the heading eases toward where you are flying (so after whipping round a
+    // trunk the view comes with you); the pitch follows the flight path. Mouse look suspends both for a moment.
+    if (this.mouseT > 1.5 && !this.grabbedBy) {
+      const v = this.vel, hs = Math.hypot(v.x, v.z);
+      if (!this.grounded && hs > 7 && !this.turn) {
+        let dy = Math.atan2(v.x, v.z) - this.yaw;
+        dy = Math.atan2(Math.sin(dy), Math.cos(dy));
+        if (Math.abs(dy) < 2.6) this.yaw += dy * damp(CFG.keys.followRate * Math.min(1.6, hs / 30), dt);
+      }
+      const vp = speed > 5 ? Math.asin(THREE.MathUtils.clamp(this.vel.y / speed, -1, 1)) : 0;
+      const pitchT = this.grounded && !this.odm.attachedCount() ? -0.16 : THREE.MathUtils.clamp(vp * 0.45 - 0.1, -0.55, 0.3);
+      this.pitch += (pitchT - this.pitch) * damp(2.2, dt);
+    }
     // trauma-based shake
     c.trauma = Math.max(0, c.trauma - dt * 1.4);
     const sh = c.trauma * c.trauma;
@@ -623,6 +834,11 @@ export class Player {
   }
 
   _supply(dt) {
+    if (!this.infiniteGas && this.odm.gas < 0.25 && !this._lowGasTold) {
+      this._lowGasTold = true;
+      this.game.hud?.message?.('GAS LOW: supply depots are on the wall top either side of the gate, on the HQ roof and on the forest platform', 4, 'warn');
+    }
+    if (this.odm.gas > 0.5) this._lowGasTold = false;
     const depots = this.game.world?.supplyDepots;
     if (!depots || !this.alive) return;
     let inside = false;

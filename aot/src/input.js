@@ -14,11 +14,12 @@ export class Input {
     this.freeLook = false;
     this.cx = innerWidth / 2; this.cy = innerHeight / 2; this.inside = false;
     this.enabled = true;
+    this.capture = true;   // swallow game keys (arrows, Space, Shift) so the page never scrolls while playing
     const key = (e) => (e.code === 'Space' ? 'Space' : e.code.startsWith('Key') ? e.code.slice(3) : e.code);
     addEventListener('keydown', (e) => {
       if (!this.enabled) return;
       const k = key(e);
-      if (['Space', 'Tab', 'ShiftLeft', 'ShiftRight', 'AltLeft', 'AltRight'].includes(k) || (this.locked && !e.metaKey)) e.preventDefault();
+      if (this.capture && (['Space', 'Tab', 'ShiftLeft', 'ShiftRight', 'AltLeft', 'AltRight', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(k) || (this.locked && !e.metaKey && !e.ctrlKey))) e.preventDefault();
       if (!this.down.has(k)) this.pressed.add(k);
       this.down.add(k);
     });
