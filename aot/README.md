@@ -10,17 +10,30 @@ single file, so double-clicking it works. For development, serve the repo root
 
 ## Controls
 
-| | |
+The keyboard is all you need. The mouse is optional.
+
+| Keys | What they do |
 |---|---|
-| Mouse | look (click the game to capture the mouse) |
-| **Q** / **E** (hold) | fire the left / right anchor at the crosshair; let go to release |
-| **Right mouse** (hold) | fire both anchors (they splay either side of the aim point) |
-| **Space** (hold) | gas: boosts the reel and thrusts where you look. On the ground it jumps. Clinging to a trunk, it kicks you off |
-| **W A S D** | run on the ground; in the air, steer; on a wire, pump the swing |
-| **Shift** | gas dash (dodge a hand) |
-| **Left mouse** | slash. Hold it while flying fast for Levi's spinning slash |
-| **R** | swap to a fresh pair of blades (4 spare pairs) |
-| **Esc** / **P** | pause · **M** mute |
+| **← →** | turn. On a rope: swing round the anchor |
+| **↑ / ↓** | run / brake. In the air: steer. On a rope: **↑** pumps the swing, **↓** lets the wire out for a longer swing |
+| **Z** / **X** (hold) | fire the left / right rope. Each one locks onto the best anchor ahead on its side, shown by a **Z** / **X** marker. Let go to release |
+| **Z + X** | both ropes: zip forward between the two anchors. If either side has a titan in view, both ropes go to the titan |
+| **Shift** | gas boost (the reel pulls harder too). Tap it on the ground to jump; clinging to a trunk, it kicks you off |
+| **Space** | cut. Hold it while flying fast for Levi's spinning slash. Swooping in on a nape, press it early: the cut fires when you arrive |
+| **Esc** / **P** | pause · **M** mute · **H** show or hide the controls card |
+
+WASD mirror the arrows. Blades swap themselves when they go dull (**R** also swaps). Mouse players can click
+the game to look around with the mouse; **Q** / **E** and the right mouse button also fire ropes.
+
+**Fighting a titan:** get within about 100 m and hold **Z + X**. Both ropes lock onto its shoulders and the gear
+swoops you round behind the neck. Press **Space** as you come in. A cut that's too slow only scratches the nape,
+so add **Shift** for speed.
+
+**Modes:**
+* **Expedition:** waves of titans from the field, the forest and the breached gate, and the Colossal Titan on wave 3.
+* **Training Grounds:** wooden titan dummies through the forest edge, some sliding on pulleys. Cut every nape
+  against the clock; your best time is kept.
+* **Free Flight:** no titans, infinite gas. Start at the forest edge and fly.
 
 Supply depots (crates under a Survey Corps flag) refill gas, blades and health. There is one on the wall top
 either side of the gate, one on the Garrison HQ roof and one on a platform in the forest.
@@ -40,6 +53,16 @@ either side of the gate, one on the Garrison HQ roof and one on a platform in th
   trunk.
 * **Gas** thrusts where you look, boosts the reel, powers the dash, and is finite. Air drag is quadratic
   (free-fall terminal speed about 75 m/s), and gravity is 14.5 m/s² for snappier, heavier arcs.
+* **Rope auto-targeting** (`Player._scan`): candidate anchors come straight from the geometry around you. Each
+  nearby trunk contributes the side facing you at a height above you, each branch its nearest stretch, each
+  building or wall its nearest face, and each titan its shoulders. Candidates are scored by distance (sweet
+  spot about 40 m), height above you, alignment with where you're going, and side, then the best few are
+  confirmed by line of sight. The previous pick wins ties, so markers hold still. Small props (cannons, crates)
+  are never picked.
+* **Letting the wire out** (↓ on a rope) is a brake-reel: under tension the wire runs out at up to 7 m/s, so the
+  swing widens instead of the reel winding the slack back in.
+* **The nape swoop:** roped to a titan, the gear flies you in three legs: out beside the head, round behind the
+  neck, then through the nape at about 33 m/s (44 with Shift). Ropes on anything else go slack meanwhile.
 * **Landing assist:** when you are about to hit a surface head-on while flying on a wire, the front vents bleed
   off the closing speed so you land on the trunk instead of hitting it. Sideways passes keep all their speed.
   Held against a wall by a wire, you run up it.
@@ -49,7 +72,11 @@ either side of the gate, one on the Garrison HQ roof and one on a platform in th
   the nape, 15 m titans about 45 m/s, and the Colossal takes several fast cuts.
 
 `node aot/tools/physics-bench.mjs` runs the real player code headless through a free swing, zips, an orbit, a
-fall, a run and a wall climb, and checks the numbers.
+fall, a run, a wall climb, rope auto-targeting, wire payout and keyboard turning, and checks the numbers.
+`node aot/tools/keyboard-bench.mjs 40` lets a keyboard-only bot (↑, alternating X and Z, some Shift) fly the
+real forest and reports distance, altitude, how often ropes catch and stalls.
+`node aot/tools/combat-bench.mjs 90` lets a keyboard-only bot fight the Expedition and reports kills, nape hits,
+grabs and deaths.
 `node aot/tools/play-bench.mjs "play=free"` drives the real game in headless Chromium and screenshots a flight.
 `node aot/tools/forest-bench.mjs 60` flies AI soldiers through the real forest for a minute and reports altitude,
 speed, canopy passes and tunnelling (none). URL flags for testing: `?play=free|expedition`, `?notitans`, `?noallies`,

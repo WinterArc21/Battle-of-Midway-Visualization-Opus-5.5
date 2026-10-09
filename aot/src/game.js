@@ -19,6 +19,8 @@ const STEPS = [
   { id: 'slack', keys: ['↓'], text: 'On a rope, hold ↓ to let the wire out for a longer swing', done: (p, s) => s.payoutT > 0.5 },
 ];
 
+const NO_ANCHOR = { id: 'no-anchor', keys: ['↑', 'Shift'], text: 'Nothing in rope range yet: run toward the trees or titans (Shift jumps the parapet)' };
+
 const store = {
   get(k) { try { return localStorage.getItem(k); } catch { return null; } },
   set(k, v) { try { localStorage.setItem(k, v); } catch { /* storage blocked: records just aren't kept */ } },
@@ -184,6 +186,11 @@ export class Game {
     t.t += dt;
     if (t.t < 1.2) { this.hint = null; return; }   // let the title card breathe first
     this.hint = s;
+    // nothing in rope range yet: say how to get somewhere that has anchors instead
+    if ((s.id === 'rope' || s.id === 'zip') && !p.targets[0].valid && !p.targets[1].valid) {
+      this.hint = NO_ANCHOR;
+      t.t = Math.min(t.t, 10);   // don't time this step out while there's nothing to hook
+    }
     if (s.done(p, t) || t.t > 15) t.doneT = 0.7;
   }
 
@@ -313,8 +320,19 @@ export class Game {
       return `TRAINING GROUNDS · cut every dummy's nape${best > 0 ? ` · best ${best.toFixed(1)} s` : ''}`;
     }
     if (g.mode !== 'expedition') return '';
-    const alive = (g.titans?.titans || []).filter((t) => t.alive).length;
+    const ts = (g.titans?.titans || []).filter((t) => t.alive);
     if (this.waveClear > 0 && this.wave > 0) return `Wave ${this.wave} cleared · next wave incoming`;
-    return `WAVE ${this.wave} · Titans remaining: ${alive} · Cut the nape`;
+    // nearest titan: distance and an arrow relative to where you're heading (↑ = straight ahead)
+    const p = g.player;
+    let near = null, nd = 1e9;
+    for (const t of ts) { const d = t.position.distanceTo(p.render); if (d < nd) { nd = d; near = t; } }
+    let guide = '';
+    if (near) {
+      const a = Math.atan2(near.position.x - p.render.x, near.position.z - p.render.z) - p.yaw;
+      const rel = Math.atan2(Math.sin(a), Math.cos(a));               // > 0: to your left
+      const arrows = ['↑', '↖', '←', '↙', '↓', '↘', '→', '↗'];
+      guide = ` · nearest ${Math.round(nd)} m ${arrows[((Math.round(rel / (Math.PI / 4)) % 8) + 8) % 8]}`;
+    }
+    return `WAVE ${this.wave} · Titans: ${ts.length}${guide} · Cut the nape`;
   }
 }
