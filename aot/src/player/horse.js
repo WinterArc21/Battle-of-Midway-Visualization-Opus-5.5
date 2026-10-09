@@ -101,8 +101,12 @@ export class Horse {
 
   /** The rider's collision-centre position: seated in the saddle (stand = 0) or standing on it (stand = 1). */
   saddle(out, stand = 0) {
-    return out.set(0, 1.5 + this.bob + stand * 0.86, -0.08).applyAxisAngle(_w.set(0, 1, 0), this.yaw).add(this.pos);
+    return out.set(0, 1.5 + this.bob + stand * 0.86, -0.08)
+      .applyAxisAngle(_w.set(0, 0, 1), this.lean || 0)          // the saddle tilts with the horse's bank
+      .applyAxisAngle(_w.set(0, 1, 0), this.yaw).add(this.pos);
   }
+  /** The horse's up vector (banked), for the rider. */
+  up(out) { return out.set(0, 1, 0).applyAxisAngle(_w.set(0, 0, 1), this.lean || 0).applyAxisAngle(_w.set(0, 1, 0), this.yaw); }
 
   fixedUpdate(dt) {
     const col = this.game.collision;
@@ -119,21 +123,26 @@ export class Horse {
       }
       if (threat) {
         const away = Math.atan2(this.pos.x - threat.position.x, this.pos.z - threat.position.z);
-        turn = Math.sign(Math.sin(away - this.yaw)); target = SPEED.gallop * 0.8; this.state = 'flee';
+        turn = -Math.sign(Math.sin(away - this.yaw)); target = SPEED.gallop * 0.8; this.state = 'flee';
       } else {
         if (this.state === 'flee' || this.speed > 3) target = 0;
         if (this.t > 6) { this.t = 0; this.state = Math.random() < 0.45 ? 'walk' : 'graze'; }
         if (this.state === 'walk') {
           target = SPEED.walk;
           const home = Math.atan2(this.home.x - this.pos.x, this.home.z - this.pos.z);
-          if (this.pos.distanceTo(this.home) > 25) turn = Math.sign(Math.sin(home - this.yaw)) * 0.6;
+          if (this.pos.distanceTo(this.home) > 25) turn = -Math.sign(Math.sin(home - this.yaw)) * 0.6;
         }
       }
     }
     const accel = target > this.speed ? 6 : 9;
     this.speed += THREE.MathUtils.clamp(target - this.speed, -accel * dt, accel * dt);
-    this.turnRate = turn * (1.9 - this.speed * 0.035);
+    // ease into and out of turns (reins, not a switch); → turns right, the same convention as the player's heading
+    this.turnS = (this.turnS || 0) + (turn - (this.turnS || 0)) * Math.min(1, dt * 5);
+    this.turnRate = -this.turnS * (1.9 - this.speed * 0.035);
     this.yaw += this.turnRate * dt;
+    // bank into the turn like a real horse at speed (centripetal lean), eased
+    const leanT = THREE.MathUtils.clamp(-this.turnRate * this.speed * 0.011, -0.2, 0.2);
+    this.lean = (this.lean || 0) + (leanT - (this.lean || 0)) * Math.min(1, dt * 4);
     this.vel.set(Math.sin(this.yaw) * this.speed, 0, Math.cos(this.yaw) * this.speed);
     this.pos.addScaledVector(this.vel, dt);
     _v.copy(this.pos); _v.y = col.groundHeight(this.pos.x, this.pos.z) + 1.2;
@@ -175,7 +184,7 @@ export class Horse {
     });
     this.trunk.position.y = 1.32 + this.bob;
     this.trunk.rotation.x = ga * 0.07 * Math.sin(P + 1.2);           // rocking: forehand up, then hindquarters up
-    g.rotation.z = THREE.MathUtils.clamp(-(this.turnRate || 0) * s * 0.012, -0.18, 0.18);   // lean into turns
+    g.rotation.z = this.lean || 0;   // banked into the turn
     const graze = this.state === 'graze' && s < 0.4 && !this.rider;
     const nodT = graze ? 1.85 : 0.72 + ga * (0.18 + 0.12 * Math.sin(P + 2.2)) + (1 - ga) * 0.04 * Math.sin(P * 2);
     this.neck.rotation.x += (nodT - this.neck.rotation.x) * Math.min(1, dt * (graze ? 1.5 : 8));

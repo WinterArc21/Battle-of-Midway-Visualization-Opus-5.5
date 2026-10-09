@@ -401,7 +401,7 @@ export class Player {
       this.rideStand += ((this.rideStandT || 0) - this.rideStand) * Math.min(1, dt * 5);
       h.saddle(this.pos, this.rideStand); this.vel.copy(h.vel);
       this.grounded = true; this.groundTime = 0; this.airTime = 0;
-      this.yaw += Math.atan2(Math.sin(h.yaw - this.yaw), Math.cos(h.yaw - this.yaw)) * Math.min(1, dt * 4);
+      this.yaw += Math.atan2(Math.sin(h.yaw - this.yaw), Math.cos(h.yaw - this.yaw)) * Math.min(1, dt * 9);
       this.launcher(0, this._origins[0]); this.launcher(1, this._origins[1]);
       this.odm.step(dt, this._origins);
       return;
@@ -755,16 +755,18 @@ export class Player {
       // fly along the velocity, but never a pure vertical dive: keep a heading so the pose stays readable
       tf.copy(v).multiplyScalar(1 / speed).addScaledVector(_e.set(Math.sin(this.yaw), 0, Math.cos(this.yaw)), anchored ? 0.25 : 0.55);
     } else tf.set(Math.sin(this.yaw), 0, Math.cos(this.yaw));
+    if (this.riding) tf.set(Math.sin(this.riding.yaw), 0, Math.cos(this.riding.yaw));
     tf.normalize();
-    this.forward.lerp(tf, damp(this.grounded ? 14 : 7, dt)).normalize();
+    this.forward.lerp(tf, damp(this.riding ? 30 : this.grounded ? 14 : 7, dt)).normalize();
     const upT = _b.copy(UP);
     const pd = this.odm.pullDir(this.render, _c);
     if (pd && !this.grounded) upT.lerp(pd, 0.55);
     if (this.wallN && this.wallTime > 0 && anchored) upT.copy(this.wallN);
+    if (this.riding) this.riding.up(upT);
     upT.addScaledVector(this.forward, -upT.dot(this.forward));
     if (upT.lengthSq() < 1e-3) upT.set(-Math.sin(this.yaw), 0, -Math.cos(this.yaw)).addScaledVector(this.forward, -0.0);
     upT.normalize();
-    this.bodyUp.lerp(upT, damp(6, dt)).normalize();
+    this.bodyUp.lerp(upT, damp(this.riding ? 20 : 6, dt)).normalize();
     this.wallTime -= dt;
 
     if (this.model) {
