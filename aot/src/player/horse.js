@@ -1,16 +1,31 @@
-// Survey Corps horses: grazing in the field and at the forest edge. Run into one to mount it; you ride standing
-// on its back like the anime. ↑ gallops, ← → steer, Shift leaps off into the air, Z / X fire a rope straight
-// off the running horse. A riderless horse slows, grazes, and bolts from titans.
+// Survey Corps horses: grazing near the gate, across the field and at the forest edge. Run onto one to mount
+// it: you ride seated; hold Shift to stand up on its back, let go to leap off with its speed; Z / X stand and
+// fire a rope straight off the running horse. A riderless horse grazes, ambles, and bolts from titans.
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { toonMaterial, addOutline } from '../core/style.js';
 
-const _v = new THREE.Vector3(), _w = new THREE.Vector3();
-const COATS = [0x5a3a22, 0x3b2a1e, 0x8a5a32, 0x2a2420, 0xb8a58a, 0x6e4a2c];
-const SPEED = { walk: 2.2, gallop: 19, max: 22 };
+const _v = new THREE.Vector3(), _w = new THREE.Vector3(), _c = new THREE.Color();
+const COATS = [0x6b4428, 0x3e2a1c, 0x8c5a30, 0x2b2420, 0xa98c6a, 0x5a3a24];
+const SPEED = { walk: 1.8, trot: 5, gallop: 19 };
+const TAU = Math.PI * 2;
 
-function part(geo, mat, parent, x, y, z, outline = 0.025) {
-  const m = new THREE.Mesh(geo, mat);
-  m.position.set(x, y, z); m.castShadow = true;
+// one vertex-coloured piece, positioned/rotated/scaled, ready to merge
+function piece(geo, color, { p = [0, 0, 0], r = [0, 0, 0], s = [1, 1, 1] } = {}) {
+  const g = geo.toNonIndexed();
+  g.deleteAttribute('uv');
+  g.applyMatrix4(new THREE.Matrix4().compose(new THREE.Vector3(...p), new THREE.Quaternion().setFromEuler(new THREE.Euler(...r)), new THREE.Vector3(...s)));
+  _c.setHex(color);
+  const n = g.attributes.position.count, col = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) { col[i * 3] = _c.r; col[i * 3 + 1] = _c.g; col[i * 3 + 2] = _c.b; }
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  return g;
+}
+const MAT = () => toonMaterial(0xffffff, { vertexColors: true });
+let _mat = null;
+function mesh(parts, parent, outline = 0) {
+  const m = new THREE.Mesh(mergeGeometries(parts), _mat || (_mat = MAT()));
+  m.castShadow = true;
   if (outline) addOutline(m, outline);
   parent.add(m);
   return m;
@@ -19,51 +34,84 @@ function part(geo, mat, parent, x, y, z, outline = 0.025) {
 export class Horse {
   constructor(game, pos, yaw, seed) {
     this.game = game;
-    this.pos = pos.clone();
+    this.pos = pos.clone(); this.home = pos.clone();
     this.vel = new THREE.Vector3();
-    this.yaw = yaw; this.speed = 0; this.phase = seed * 7;
+    this.yaw = yaw; this.speed = 0; this.phase = seed * 7; this.bob = 0;
     this.rider = null; this.want = { f: 0, turn: 0 };
-    this.state = 'graze'; this.t = seed * 3;
-    this.home = pos.clone();
-    const coat = toonMaterial(COATS[Math.floor(seed * 97) % COATS.length]);
-    const dark = toonMaterial(0x1e1712), leather = toonMaterial(0x4a3020), hoof = toonMaterial(0x1a1612);
+    this.state = 'graze'; this.t = seed * 3; this.mountCd = 0; this.crashed = 0;
+    const coat = COATS[Math.floor(seed * 97) % COATS.length];
+    const dark = 0x1c1511, leather = 0x4a2e1a, hoof = 0x1a1612, sock = Math.floor(seed * 13) % 3 === 0 ? 0xe8e0d0 : coat;
     const g = this.root = new THREE.Group();
-    const body = new THREE.SphereGeometry(1, 14, 10).scale(0.48, 0.55, 1.15);
-    this.body = part(body, coat, g, 0, 1.45, 0);
-    part(new THREE.BoxGeometry(0.62, 0.12, 0.7), leather, g, 0, 1.98, -0.05, 0.015);            // saddle
-    const neck = new THREE.Group(); neck.position.set(0, 1.75, 0.95); neck.rotation.x = -0.75; g.add(neck);
-    part(new THREE.CylinderGeometry(0.2, 0.3, 1.0, 10), coat, neck, 0, 0.45, 0);
-    this.head = new THREE.Group(); this.head.position.set(0, 0.95, 0.05); neck.add(this.head);
-    part(new THREE.BoxGeometry(0.26, 0.28, 0.62), coat, this.head, 0, 0, 0.22).rotation.x = 0.9;
-    part(new THREE.BoxGeometry(0.06, 0.5, 0.18), dark, neck, 0, 0.5, -0.24, 0);                   // mane
-    this.tail = new THREE.Group(); this.tail.position.set(0, 1.62, -1.12); g.add(this.tail);
-    part(new THREE.CylinderGeometry(0.05, 0.13, 0.8, 6), dark, this.tail, 0, -0.38, -0.05, 0);
+
+    // body: barrel, deep chest, rounded rump (higher), withers, saddle and pad
+    this.trunk = new THREE.Group(); this.trunk.position.y = 1.32; g.add(this.trunk);
+    mesh([
+      piece(new THREE.CapsuleGeometry(0.4, 1.05, 6, 14), coat, { r: [Math.PI / 2, 0, 0], s: [0.92, 1.12, 1] }),
+      piece(new THREE.SphereGeometry(0.46, 14, 10), coat, { p: [0, 0.05, 0.62], s: [0.9, 1.08, 0.95] }),        // chest
+      piece(new THREE.SphereGeometry(0.47, 14, 10), coat, { p: [0, 0.1, -0.68], s: [0.95, 1.0, 1.0] }),          // rump
+      piece(new THREE.SphereGeometry(0.22, 10, 8), coat, { p: [0, 0.42, 0.55], s: [0.8, 0.8, 1.4] }),           // withers
+      piece(new THREE.BoxGeometry(0.66, 0.06, 0.78), 0x2e4a2e, { p: [0, 0.47, -0.02] }),                          // green saddle pad
+      piece(new THREE.CylinderGeometry(0.3, 0.32, 0.62, 12, 1, false, 0, Math.PI), leather, { p: [0, 0.48, -0.04], r: [Math.PI / 2, 0, Math.PI / 2], s: [1, 1, 0.45] }),
+      piece(new THREE.BoxGeometry(0.08, 0.2, 0.12), leather, { p: [0, 0.6, 0.24] }),                              // pommel
+      piece(new THREE.BoxGeometry(0.06, 0.62, 0.06), leather, { p: [0.36, 0.12, 0], r: [0, 0, 0.05] }),          // girth L
+      piece(new THREE.BoxGeometry(0.06, 0.62, 0.06), leather, { p: [-0.36, 0.12, 0], r: [0, 0, -0.05] }),        // girth R
+    ], this.trunk, 0.02);
+
+    // neck (arched, thick at the base) + head with a long muzzle, ears, mane, forelock, bridle
+    this.neck = new THREE.Group(); this.neck.position.set(0, 0.3, 0.78); this.neck.rotation.x = 0.72; this.trunk.add(this.neck);
+    mesh([
+      piece(new THREE.CylinderGeometry(0.17, 0.33, 0.95, 12), coat, { p: [0, 0.42, 0], s: [0.8, 1, 1.15] }),
+      piece(new THREE.BoxGeometry(0.07, 0.95, 0.16), dark, { p: [0, 0.45, -0.2], r: [0.12, 0, 0] }),              // mane
+    ], this.neck, 0.018);
+    this.head = new THREE.Group(); this.head.position.set(0, 0.88, 0.02); this.neck.add(this.head);
+    mesh([
+      // the face runs forward-down from the poll (head frame is tilted 0.72 rad with the neck)
+      piece(new THREE.CylinderGeometry(0.15, 0.095, 0.62, 10), coat, { p: [0, -0.02, 0.29], r: [1.64, 0, 0], s: [1, 1, 1.15] }),  // face
+      piece(new THREE.SphereGeometry(0.16, 10, 8), coat, { p: [0, 0, 0.02], s: [0.95, 1, 1.1] }),                   // jowl
+      piece(new THREE.SphereGeometry(0.105, 8, 6), coat, { p: [0, -0.06, 0.6], s: [1, 0.85, 1.15] }),               // muzzle
+      piece(new THREE.ConeGeometry(0.045, 0.17, 5), coat, { p: [0.07, 0.16, -0.06], r: [-0.72, 0, -0.2] }),          // ears
+      piece(new THREE.ConeGeometry(0.045, 0.17, 5), coat, { p: [-0.07, 0.16, -0.06], r: [-0.72, 0, 0.2] }),
+      piece(new THREE.BoxGeometry(0.05, 0.1, 0.12), dark, { p: [0, 0.12, 0.06] }),                                  // forelock
+      piece(new THREE.SphereGeometry(0.03, 6, 4), 0x0c0a08, { p: [0.12, 0.02, 0.12] }),                             // eyes
+      piece(new THREE.SphereGeometry(0.03, 6, 4), 0x0c0a08, { p: [-0.12, 0.02, 0.12] }),
+      piece(new THREE.TorusGeometry(0.115, 0.012, 4, 12), leather, { p: [0, -0.05, 0.47] }),                         // noseband
+    ], this.head, 0.014);
+
+    // tail
+    this.tail = new THREE.Group(); this.tail.position.set(0, 0.3, -1.08); this.trunk.add(this.tail);
+    mesh([piece(new THREE.ConeGeometry(0.12, 0.95, 7), dark, { p: [0, -0.45, -0.05], r: [Math.PI, 0, 0] })], this.tail);
+
+    // legs: forearm/gaskin + cannon, knee/hock, fetlock and hoof; hind legs carry the backward hock angle
     this.legs = [];
-    const thigh = new THREE.CylinderGeometry(0.1, 0.08, 0.62, 7), shin = new THREE.CylinderGeometry(0.06, 0.055, 0.62, 6);
-    for (const [x, z, ph] of [[-0.24, 0.72, 0], [0.24, 0.72, 0.5], [-0.24, -0.72, 0.25], [0.24, -0.72, 0.75]]) {
-      const hip = new THREE.Group(); hip.position.set(x, 1.22, z); g.add(hip);
-      part(thigh, coat, hip, 0, -0.31, 0, 0.015);
-      const knee = new THREE.Group(); knee.position.y = -0.62; hip.add(knee);
-      part(shin, coat, knee, 0, -0.31, 0, 0.012);
-      part(new THREE.CylinderGeometry(0.075, 0.08, 0.1, 6), hoof, knee, 0, -0.62, 0, 0);
-      this.legs.push({ hip, knee, ph, front: z > 0 });
+    for (const [x, z, front] of [[-0.24, 0.62, 1], [0.24, 0.62, 1], [-0.25, -0.72, 0], [0.25, -0.72, 0]]) {
+      const hip = new THREE.Group(); hip.position.set(x, front ? 1.1 : 1.26, z); g.add(hip);
+      mesh([
+        piece(new THREE.CylinderGeometry(front ? 0.1 : 0.15, 0.075, front ? 0.55 : 0.62, 8), coat, { p: [0, front ? -0.27 : -0.3, front ? 0 : 0.06], r: [front ? 0 : -0.25, 0, 0] }),
+      ], hip);
+      const knee = new THREE.Group(); knee.position.set(0, front ? -0.55 : -0.6, front ? 0 : 0.14); hip.add(knee);
+      mesh([
+        piece(new THREE.CylinderGeometry(0.055, 0.05, 0.5, 7), sock, { p: [0, -0.25, 0], r: [front ? 0 : 0.18, 0, 0] }),
+        piece(new THREE.SphereGeometry(0.065, 7, 5), sock, { p: [0, -0.5, front ? 0 : -0.09] }),                    // fetlock
+        piece(new THREE.CylinderGeometry(0.06, 0.08, 0.1, 8), hoof, { p: [0, -0.58, front ? 0.02 : -0.07] }),
+      ], knee);
+      this.legs.push({ hip, knee, front, side: x < 0 ? 0 : 1 });
     }
     game.scene.add(g);
-    this.mountCd = 0;
   }
 
-  /** Where a rider stands (on the saddle), world space. */
-  saddle(out) { return out.set(0, 2.55, -0.05).applyAxisAngle(_w.set(0, 1, 0), this.yaw).add(this.pos); }
+  /** The rider's collision-centre position: seated in the saddle (stand = 0) or standing on it (stand = 1). */
+  saddle(out, stand = 0) {
+    return out.set(0, 1.5 + this.bob + stand * 0.86, -0.08).applyAxisAngle(_w.set(0, 1, 0), this.yaw).add(this.pos);
+  }
 
   fixedUpdate(dt) {
     const col = this.game.collision;
     this.t += dt; this.mountCd -= dt;
     let target = 0, turn = 0;
     if (this.rider) {
-      target = this.want.f > 0 ? SPEED.gallop : this.want.f < 0 ? 0 : Math.max(this.speed - 4 * dt, 6);
+      target = this.want.f > 0 ? SPEED.gallop : this.want.f < 0 ? 0 : Math.max(this.speed - 3 * dt, Math.min(this.speed, SPEED.trot));
       turn = this.want.turn;
     } else {
-      // riderless: graze, amble back toward home, bolt from nearby titans
       let threat = null, td = 45;
       for (const t of this.game.titans?.titans || []) {
         if (!t.alive) continue;
@@ -74,7 +122,7 @@ export class Horse {
         turn = Math.sign(Math.sin(away - this.yaw)); target = SPEED.gallop * 0.8; this.state = 'flee';
       } else {
         if (this.state === 'flee' || this.speed > 3) target = 0;
-        if (this.t > 6) { this.t = 0; this.state = Math.random() < 0.5 ? 'walk' : 'graze'; }
+        if (this.t > 6) { this.t = 0; this.state = Math.random() < 0.45 ? 'walk' : 'graze'; }
         if (this.state === 'walk') {
           target = SPEED.walk;
           const home = Math.atan2(this.home.x - this.pos.x, this.home.z - this.pos.z);
@@ -82,17 +130,16 @@ export class Horse {
         }
       }
     }
-    const accel = target > this.speed ? 7 : 10;
+    const accel = target > this.speed ? 6 : 9;
     this.speed += THREE.MathUtils.clamp(target - this.speed, -accel * dt, accel * dt);
-    this.yaw += turn * (1.9 - this.speed * 0.03) * dt;
+    this.turnRate = turn * (1.9 - this.speed * 0.035);
+    this.yaw += this.turnRate * dt;
     this.vel.set(Math.sin(this.yaw) * this.speed, 0, Math.cos(this.yaw) * this.speed);
     this.pos.addScaledVector(this.vel, dt);
-    // stay out of trunks, walls and houses; follow the ground
     _v.copy(this.pos); _v.y = col.groundHeight(this.pos.x, this.pos.z) + 1.2;
     for (const c of col.collideSphere(_v, 1.0, { dynamic: false })) {
       if (c.collider.type === 'ground' || c.depth <= 0) continue;
       this.pos.x += c.normal.x * c.depth; this.pos.z += c.normal.z * c.depth;
-      // a head-on crash at a gallop throws the rider; a glancing one just slows the horse
       const head = -(c.normal.x * Math.sin(this.yaw) + c.normal.z * Math.cos(this.yaw));
       if (this.rider && head > 0.7 && this.speed > 12) this.crashed = this.speed;
       if (this.speed > 6) this.speed *= head > 0.7 ? 0.3 : 0.9;
@@ -101,40 +148,56 @@ export class Horse {
     this.pos.x = THREE.MathUtils.clamp(this.pos.x, -1050, 1050);
     this.pos.z = THREE.MathUtils.clamp(this.pos.z, -620, 1020);
     if (this.pos.z > -7 && this.pos.z < 7 && Math.abs(this.pos.x) > 7) this.pos.z = this.pos.z < 0 ? -7 : 7;   // the wall
+    // gait phase and the body's rise and fall (the rider moves with it)
+    const s = this.speed;
+    this.gallop = THREE.MathUtils.smoothstep(s, 6, 12);
+    this.phase += dt * (s < 0.2 ? 0 : s < 6 ? 0.55 + s * 0.22 : 1.9 + s * 0.035);
+    const P = this.phase * TAU;
+    this.bob = this.gallop * 0.11 * Math.sin(P * 1) + (1 - this.gallop) * Math.min(1, s / 4) * 0.035 * Math.sin(P * 2);
   }
 
   update(dt) {
-    const g = this.root;
+    const g = this.root, s = this.speed, ga = this.gallop || 0;
     g.position.copy(this.pos);
     g.rotation.y = this.yaw;
-    // gait: walk at low speed, a bounding gallop when fast
-    const s = this.speed, gallop = THREE.MathUtils.smoothstep(s, 5, 12);
-    this.phase += dt * (s < 0.3 ? 0 : 1.6 + s * 0.16);
-    const P = this.phase * Math.PI * 2;
-    for (const l of this.legs) {
-      const ph = P + (gallop > 0.5 ? (l.front ? 0 : 0.5) + (l.ph % 0.5) * 0.25 : l.ph) * Math.PI * 2;
-      const amp = Math.min(1, s / 6) * (0.45 + gallop * 0.35);
-      l.hip.rotation.x = Math.sin(ph) * amp;
-      l.knee.rotation.x = (l.front ? -1 : 1) * Math.max(0, -Math.cos(ph)) * amp * 1.4;
-    }
-    this.body.position.y = 1.45 + Math.abs(Math.sin(P)) * 0.12 * gallop;
-    g.rotation.x = Math.sin(P) * 0.05 * gallop;
-    const graze = this.state === 'graze' && s < 0.5 && !this.rider;
-    this.head.rotation.x += ((graze ? 0.9 : 0) - this.head.rotation.x) * Math.min(1, dt * 2);
-    this.tail.rotation.x = 0.3 + gallop * 0.6 + Math.sin(this.phase * 3) * 0.1;
+    const P = this.phase * TAU;
+    // gallop: a transverse four-beat (hind L, hind R, fore L, fore R) with a gathered suspension phase;
+    // walk/trot: diagonal pairs
+    const offsG = [0.42, 0.52, 0.0, 0.1], offsW = [0.5, 0.0, 0.0, 0.5];
+    const amp = Math.min(1, s / 5);
+    this.legs.forEach((l, i) => {
+      const off = THREE.MathUtils.lerp(offsW[i], offsG[i], ga);
+      const ph = P + off * TAU;
+      const sw = Math.sin(ph) * amp * (0.32 + ga * 0.38);          // + = reaching forward
+      const lift = Math.max(0, Math.cos(ph)) * amp * (0.35 + ga * 0.9); // the leg folds while it swings forward
+      l.hip.rotation.x = -sw;
+      l.knee.rotation.x = l.front ? lift * 1.2 : -lift * 0.9;        // fore knee folds back, hind hock folds forward
+    });
+    this.trunk.position.y = 1.32 + this.bob;
+    this.trunk.rotation.x = ga * 0.07 * Math.sin(P + 1.2);           // rocking: forehand up, then hindquarters up
+    g.rotation.z = THREE.MathUtils.clamp(-(this.turnRate || 0) * s * 0.012, -0.18, 0.18);   // lean into turns
+    const graze = this.state === 'graze' && s < 0.4 && !this.rider;
+    const nodT = graze ? 1.85 : 0.72 + ga * (0.18 + 0.12 * Math.sin(P + 2.2)) + (1 - ga) * 0.04 * Math.sin(P * 2);
+    this.neck.rotation.x += (nodT - this.neck.rotation.x) * Math.min(1, dt * (graze ? 1.5 : 8));
+    this.head.rotation.x = graze ? -0.3 : 0.05 - ga * 0.12;
+    this.tail.rotation.x = 0.25 + ga * 0.75 + Math.sin(this.phase * 3.1) * 0.12;
   }
 }
 
-/** A few horses near the gate (the expedition's mounts) and scattered over the field and forest edge. */
+/** A few horses near the gate (the Expedition's mounts) and scattered over the field and the forest edge. */
 export class Herd {
   constructor(game) {
     this.game = game;
-    const spots = [[-14, 22], [14, 26], [0, 34], [-60, 70], [70, 95], [-120, 140], [130, 150], [20, 175], [-40, 185], [210, 60]];
-    this.horses = spots.map(([x, z], i) => {
-      const y = game.collision.groundHeight(x, z);
-      return new Horse(game, new THREE.Vector3(x, y, z), (i * 2.4) % (Math.PI * 2), (i + 1) * 0.137);
-    });
+    const spots = [[-14, 22], [14, 26], [0, 34], [-60, 70], [70, 95], [-120, 140], [130, 150], [20, 175]];
+    this.horses = spots.map(([x, z], i) => new Horse(game, new THREE.Vector3(x, game.collision.groundHeight(x, z), z), (i * 2.4) % TAU, (i + 1) * 0.137));
   }
   fixedUpdate(dt) { for (const h of this.horses) h.fixedUpdate(dt); }
-  update(dt) { for (const h of this.horses) h.update(dt); }
+  update(dt) {
+    const cam = this.game.camera.position;
+    for (const h of this.horses) {
+      const vis = h.pos.distanceToSquared(cam) < 450 * 450;
+      h.root.visible = vis;
+      if (vis) h.update(dt);
+    }
+  }
 }

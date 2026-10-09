@@ -406,7 +406,7 @@ export class PlayerModel {
     this._buildCapeMesh();
 
     // smoothed state
-    this.wAir = 0; this.wSpin = 0; this.wGrab = 0; this.wSlash = 0; this.wHook = 0; this.wBoost = 0; this.wRun = 0;
+    this.wRide = 0; this.wCrouch = 0; this.wAir = 0; this.wSpin = 0; this.wGrab = 0; this.wSlash = 0; this.wHook = 0; this.wBoost = 0; this.wRun = 0;
     this.theta = 0.05; this.roll = 0; this.spinAngle = 0; this.slashP = 0;
     this.up = new THREE.Vector3(0, 1, 0);
     this.heading = new THREE.Vector3(0, 0, 1);
@@ -728,6 +728,8 @@ export class PlayerModel {
     this.wGrab += ((s.grabbed ? 1 : 0) - this.wGrab) * (first ? 1 : k(9));
     this.wBoost += (clamp(finite(s.boosting), 0, 1) - this.wBoost) * (first ? 1 : k(14));
     this.wRun += (running - this.wRun) * (first ? 1 : k(10));
+    this.wRide += (clamp(finite(s.riding), 0, 1) - this.wRide) * (first ? 1 : k(7));
+    this.wCrouch += (clamp(finite(s.crouch), 0, 1) - this.wCrouch) * (first ? 1 : k(this.wCrouch < finite(s.crouch) ? 30 : 8));
     const slashing = s.slash !== undefined && s.slash >= 0 && s.slash <= 1.0001;
     if (slashing) this.slashP = s.slash;
     this.wSlash += ((slashing ? 1 : 0) - this.wSlash) * (first ? 1 : k(slashing ? 32 : 11));
@@ -859,8 +861,9 @@ export class PlayerModel {
       TA[LSZ + oa] = lerp(0.95, 0.13 + 0.06 * asym, L);
       TA[LEX + oa] = lerp(0.35, 0.26, L);
       TA[LWX + oa] = TA[LEX + oa] + lerp(0.1, 0.16, L);
-      TA[LHX + o] = lerp(-0.18 * sgn, 0.07 + 0.05 * asym, L) * 1; TA[LHZ + o] = lerp(0.22, 0.045, L);
-      TA[LKX + o] = lerp(0.4, hookBend + 0.04 * asym, L);
+      const tuck = sd === 0 ? 1 : 0.2;   // anime flight: one knee drawn up, the other leg trailing
+      TA[LHX + o] = lerp(-0.18 * sgn, 0.07 - 0.42 * tuck * (0.6 + 0.4 * this.wHook) + 0.05 * asym, L) * 1; TA[LHZ + o] = lerp(0.22, 0.045, L);
+      TA[LKX + o] = lerp(0.4, hookBend + 0.75 * tuck + 0.04 * asym, L);
       TA[LAX + o] = lerp(0.1, 0.8, L);
     }
     // grabbed: struggling
@@ -879,6 +882,41 @@ export class PlayerModel {
     }
     // base mixes
     for (let i = 0; i < NCH; i++) TC[i] = lerp(TG[i], TA[i], this.wAir);
+    // crouch: the knees take a landing (or load a jump); hips back, chest forward, pelvis drops, feet stay planted
+    const cr = this.wCrouch * (1 - this.wAir);
+    if (cr > 0.001) {
+      TC[SPX] += 0.5 * cr; TC[HDX] -= 0.35 * cr; TC[BOB] -= 0.36 * cr;
+      for (let sd = 0; sd < 2; sd++) {
+        const o = sd * 4, oa = sd * 5;
+        TC[LHX + o] -= 1.0 * cr; TC[LKX + o] += 1.75 * cr; TC[LAX + o] -= 0.75 * cr; TC[LHZ + o] += 0.08 * cr;
+        TC[LSX + oa] -= 0.45 * cr; TC[LSZ + oa] += 0.25 * cr; TC[LEX + oa] += 0.3 * cr;
+      }
+    }
+    // riding: seated in the saddle, thighs round the barrel, hands on the reins, swaying with the gallop
+    const rd = this.wRide;
+    if (rd > 0.001) {
+      const hg = clamp(finite(s.horseGallop), 0, 1), hp = finite(s.horsePhase) * TAU;
+      const sway = Math.sin(hp + 0.6) * (0.06 + 0.1 * hg);
+      for (let i = 0; i < NCH; i++) {
+        let v;
+        switch (i) {
+          case SPX: v = 0.12 + 0.18 * hg + sway; break;
+          case SPY: case SPZ: v = 0; break;
+          case HDX: v = -0.1 - 0.12 * hg - sway * 0.6; break;
+          case LSX: case RSX: v = -0.6 - 0.15 * hg; break;
+          case LSZ: case RSZ: v = 0.12; break;
+          case LEX: case REX: v = 1.15 + 0.15 * Math.sin(hp); break;
+          case LWX: case RWX: v = 0.35; break;
+          case LHX: case RHX: v = -1.42; break;
+          case LHZ: case RHZ: v = 0.58; break;
+          case LKX: case RKX: v = 1.6 + 0.1 * hg * Math.sin(hp); break;
+          case LAX: case RAX: v = -0.3; break;
+          case BOB: v = 0; break;
+          default: v = TC[i];
+        }
+        TC[i] = lerp(TC[i], v, rd);
+      }
+    }
     // spin pose: arms out wide, blades forward, legs together
     TP.set(TC);
     TP[SPX] = -0.05; TP[SPY] = 0; TP[SPZ] = 0;

@@ -48,7 +48,7 @@ export class Player {
     this.stun = 0; this.grabbedBy = null; this.grabHand = null; this.struggle = 0; this.grabImmune = 0;
     this.reelLevel = 0; this.impactCooldown = 0;
     this.wishF = 0; this.wishR = 0; this.turn = 0; this.wantBoost = false; this._dashPuff = 0;
-    this.shiftHeld = 0; this.payout = false; this.mouseT = 99; this.autoSwapT = 0; this.primeT = 0; this.mountCd = 0; if (this.riding) this.riding.rider = null; this.riding = null; this.prey = null; this.preyDist = 1e9; this.swooping = false;
+    this.shiftHeld = 0; this.payout = false; this.mouseT = 99; this.autoSwapT = 0; this.primeT = 0; this.mountCd = 0; this.rideStand = 0; this.rideStandT = 0; this.crouch = 0; if (this.riding) this.riding.rider = null; this.riding = null; this.prey = null; this.preyDist = 1e9; this.swooping = false;
     if (this.targets) for (const t of this.targets) { t.valid = false; t.collider = null; t.titan = null; }
     this.odm.reset();
     this.cam.pos.copy(position).add(new THREE.Vector3(Math.sin(yaw) * -5, 2, Math.cos(yaw) * -5));
@@ -90,9 +90,12 @@ export class Player {
       const h = this.riding;
       h.want.f = F - B; h.want.turn = R - L;
       this.turn = 0; this.wishF = 0; this.wishR = 0;
-      const shiftHit = input.hit('ShiftLeft') || input.hit('ShiftRight');
+      // hold Shift: rise from the saddle and stand on the galloping horse; let go to spring off it
+      const shiftHeld = input.held('ShiftLeft') || input.held('ShiftRight');
       const rope = input.hit('Z') || input.hit('X') || input.hit('Q') || input.hit('E') || input.hit('Mouse2');
-      if (shiftHit || rope) this._leapOff(shiftHit ? CFG.horse.leap : CFG.horse.ropeLeap);
+      this.rideStandT = shiftHeld || rope ? 1 : 0;
+      const release = !shiftHeld && this.rideStand > 0.7;
+      if (release || rope) this._leapOff(rope ? CFG.horse.ropeLeap : CFG.horse.leap);
       else {
         if (cut && this.swapT <= 0) this._slash();
         return;
@@ -138,6 +141,7 @@ export class Player {
     } else if (shiftHit && this.grounded && this.groundTime < CFG.ground.coyote + 0.01) {
       this.vel.y = Math.max(this.vel.y, CFG.ground.jump);
       if (F) { const f = this._heading(_e); this.vel.addScaledVector(f, 3); }
+      this.crouch = Math.max(this.crouch, 0.45);
       this.grounded = false; this.groundTime = 1;
       this.spaceHeld = 0;
     }
@@ -347,7 +351,7 @@ export class Player {
       if (h.rider || h.mountCd > 0) continue;
       h.saddle(_e);
       if (_e.distanceToSquared(this.pos) < CFG.horse.mountRadius ** 2 && this.vel.y < 2) {
-        this.riding = h; h.rider = this; h.speed = Math.max(h.speed, Math.hypot(this.vel.x, this.vel.z) * 0.8);
+        this.riding = h; this.rideStand = 0.3; this.rideStandT = 0; h.rider = this; h.speed = Math.max(h.speed, Math.hypot(this.vel.x, this.vel.z) * 0.8);
         h.yaw = Math.hypot(this.vel.x, this.vel.z) > 3 ? Math.atan2(this.vel.x, this.vel.z) : this.yaw;
         this.game.audio?.land?.(0.4);
         this.game.events.emit('player:mounted', { horse: h });
@@ -394,7 +398,8 @@ export class Player {
         this.cam.trauma = Math.min(1, this.cam.trauma + 0.5);
         return;
       }
-      h.saddle(this.pos); this.vel.copy(h.vel);
+      this.rideStand += ((this.rideStandT || 0) - this.rideStand) * Math.min(1, dt * 5);
+      h.saddle(this.pos, this.rideStand); this.vel.copy(h.vel);
       this.grounded = true; this.groundTime = 0; this.airTime = 0;
       this.yaw += Math.atan2(Math.sin(h.yaw - this.yaw), Math.cos(h.yaw - this.yaw)) * Math.min(1, dt * 4);
       this.launcher(0, this._origins[0]); this.launcher(1, this._origins[1]);
@@ -767,10 +772,13 @@ export class Player {
       const run = this.riding ? 0 : this.grounded ? Math.min(1, Math.hypot(v.x, v.z) / CFG.ground.run) : (this.wallN && anchored ? 1 : 0);
       const slash = this.slashT >= 0 ? this.slashT / CFG.combat.slashTime : -1;
       this.boostLevel += ((this.boosting || this._dashPuff > 0 ? 1 : 0) - this.boostLevel) * damp(18, dt);
+      this.crouch = Math.max(0, this.crouch - dt * 2.6);
       this.model.update(dt, {
+        riding: this.riding ? 1 - this.rideStand : 0, crouch: this.grounded ? this.crouch : 0,
+        horseGallop: this.riding?.gallop || 0, horsePhase: this.riding?.phase || 0,
         position: this._modelPos.copy(this.render).addScaledVector(this.bodyUp, CFG.modelLift), velocity: v, forward: this.forward, up: this.bodyUp,
         grounded: this.grounded, running: run, hooks, boosting: this.boostLevel, slash,
-        spin: this.spin, grabbed: !!this.grabbedBy, blades: this.blade > 0 && this.swapT <= 0, speed,
+        spin: this.spin, grabbed: !!this.grabbedBy, blades: this.blade > 0 && this.swapT <= 0 && !(this.riding && this.rideStand < 0.5), speed,
         alive: this.alive,
       });
       if (this.model.root) this.model.root.visible = this.alive || !!this.grabbedBy;
@@ -786,6 +794,7 @@ export class Player {
     // landing dust
     if (this._landT > 0) {
       const s = this._landT; this._landT = 0;
+      this.crouch = Math.max(this.crouch, 0.35 + s * 0.65);   // knees take the landing
       game.audio?.land?.(s);
       game.fx?.impact?.(_c.copy(this.render).addScaledVector(this.groundN, -CFG.radius), this.groundN, 'ground');
       if (s > 0.4) this.cam.trauma = Math.min(1, this.cam.trauma + s * 0.3);
