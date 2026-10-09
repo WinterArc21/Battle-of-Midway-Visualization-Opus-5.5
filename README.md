@@ -1,3 +1,6 @@
+> **Branch `AOT`: WINGS OF FREEDOM**, a fan-made Attack on Titan ODM-gear game, lives in [`aot/`](aot/README.md).
+> Play it by opening [`aot/dist/wings-of-freedom.html`](aot/dist/wings-of-freedom.html) in a browser.
+
 # MIDWAY · 10:22
 
 4 June 1942, 10:22 a.m. A Dauntless dive-bomber from USS Enterprise falls from 13,000 feet onto the Japanese flagship Akagi.

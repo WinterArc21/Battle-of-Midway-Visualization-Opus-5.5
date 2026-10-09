@@ -51,6 +51,12 @@ either side of the gate, one on the Garrison HQ roof and one on a platform in th
 `node aot/tools/physics-bench.mjs` runs the real player code headless through a free swing, zips, an orbit, a
 fall, a run and a wall climb, and checks the numbers.
 `node aot/tools/play-bench.mjs "play=free"` drives the real game in headless Chromium and screenshots a flight.
+`node aot/tools/forest-bench.mjs 60` flies AI soldiers through the real forest for a minute and reports altitude,
+speed, canopy passes and tunnelling (none). URL flags for testing: `?play=free|expedition`, `?notitans`, `?noallies`,
+`?allies=N`, `?noaudio`, `?norender`, `?testworld`, `?sens=1.5`, `?invert`.
+
+Your **comrades**: a few AI Survey Corps soldiers fly on exactly the same ODM physics as you. They hop from tree to
+tree and harass titans, which you can watch behind the title screen too.
 
 ## Layout
 

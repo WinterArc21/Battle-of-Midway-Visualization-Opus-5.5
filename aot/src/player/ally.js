@@ -44,7 +44,7 @@ export class Ally {
       if (target && attempt === 0) dir.subVectors(target, this.pos).normalize();
       else {
         const yaw = Math.atan2(this.heading.x, this.heading.z) + (r() - 0.5) * 1.6;
-        const pitch = 0.15 + r() * 0.45 + (this.pos.y < 20 ? 0.3 : 0) - (this.pos.y > 85 ? 0.4 : 0);
+        const pitch = 0.22 + r() * 0.5 + (this.pos.y < 25 ? 0.35 : 0) - (this.pos.y > 95 ? 0.55 : 0);
         dir.set(Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), Math.cos(yaw) * Math.cos(pitch));
       }
       const hit = col.raycast(this.pos, dir, CFG.hook.range * 0.85, { hookableOnly: true });
@@ -69,10 +69,10 @@ export class Ally {
         const twin = this.rand() < 0.5;
         odm.fire(0, p, pt, _b.subVectors(pt, p).normalize());
         if (twin) odm.fire(1, p, pt.clone().add(_c.set(this.rand() - 0.5, 0, this.rand() - 0.5).multiplyScalar(3)), _b);
-        this.holdT = 0.9 + this.rand() * 1.1;
+        this.holdT = 1.1 + this.rand() * 1.3;
         this.boost = this.rand() < 0.4 ? 0.7 : 0;
       }
-      this.nextT = 0.5 + this.rand() * 0.6;
+      this.nextT = 0.2 + this.rand() * 0.35;
     }
     const acc = _a.set(0, -CFG.gravity, 0);
     const sp = v.length();
@@ -81,8 +81,8 @@ export class Ally {
     if (this.boost > 0) this.boost -= dt;
     // stay in the playable air: a bit of gas when low, steer back toward the action area
     if (p.y < 8 && v.y < 4) acc.y += 30;
-    const home = _b.set(-p.x, 0, 260 - p.z);
-    if (home.length() > 380) acc.addScaledVector(home.normalize(), 8);
+    const home = _b.set(-p.x, 0, 380 - p.z);
+    if (home.length() > 260) acc.addScaledVector(home.normalize(), 8);
     v.addScaledVector(acc, dt);
     const n = Math.min(10, Math.max(1, Math.ceil((v.length() * dt) / 0.35)));
     for (let i = 0; i < n; i++) {
