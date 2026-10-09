@@ -113,6 +113,7 @@ const boot = async () => {
   game.flow = new Game(game);
 
   // comrades in the air: AI soldiers on the same ODM physics
+  game.herd = params.has('nohorses') ? null : await load(() => import('./player/horse.js'), (m) => new m.Herd(game));
   game.allies = [];
   if (!params.has('noallies')) await load(() => import('./player/ally.js'), async (am) => {
     const mm = await import('./player/model.js');
@@ -192,6 +193,7 @@ function step(dt) {
   while (acc >= STEP && n < 12) {
     if (playing) player.fixedUpdate(STEP);
     for (const a of game.allies) a.fixedUpdate(STEP);
+    game.herd?.fixedUpdate(STEP);
     acc -= STEP; n++;
   }
   if (n === 12) acc = 0;
@@ -201,6 +203,7 @@ function step(dt) {
   if (playing) player.update(simDt, acc / STEP);
   else menuCamera(dt);
   for (const a of game.allies) a.update(simDt, acc / STEP);
+  game.herd?.update(simDt);
   game.flow.update(simDt);
   try { game.fx?.update(simDt); } catch (e) { console.error('fx.update', e); }
   try { game.world?.update?.(simDt, camera.position); } catch (e) { console.error('world.update', e); }

@@ -11,6 +11,7 @@ const WAVES = [
 
 // Tutorial steps: each shows until the player has actually done it (or 14 s pass).
 const STEPS = [
+  { id: 'horse', keys: ['↑', 'Shift'], text: 'On horseback: ↑ gallop, ← → steer. Shift stands up and leaps off; Z / X fire a rope straight off the horse', done: (p) => !p.riding, when: (p) => !!p.riding },
   { id: 'rope', keys: ['X'], text: 'Hold X to fire your right rope at the X marker', done: (p) => p.odm.attachedCount() > 0 },
   { id: 'zip', keys: ['Z', 'X'], text: 'Hold Z and X together to zip forward between both anchors', done: (p) => p.odm.attachedCount() === 2 },
   { id: 'steer', keys: ['←', '→'], text: 'Steer with the arrows. Let go of Z / X to fly free, then grab the next anchor', done: (p, s) => s.steerT > 0.6 },
@@ -102,6 +103,13 @@ export class Game {
     g.player.infiniteGas = mode !== 'expedition';
     if (mode === 'training') g.player.spares = 99;
 
+    // the Expedition rides out like the Survey Corps: mounted, just outside the breached gate
+    if (mode === 'expedition' && g.herd?.horses?.length) {
+      const h = g.herd.horses[0];
+      h.pos.set(0, g.collision.groundHeight(0, 14), 14); h.yaw = 0; h.speed = 8; h.home.copy(h.pos);
+      h.rider = g.player; g.player.riding = h; g.player.yaw = 0;
+      h.saddle(g.player.pos); g.player.prev.copy(g.player.pos);
+    }
     this._startTutorial();
     if (mode === 'expedition') {
       g.hud?.message?.('DEDICATE YOUR HEART', 2.6, 'big');
@@ -175,7 +183,7 @@ export class Game {
     if (p.boosting) t.boostT += dt;
     if (p.payout) t.payoutT += dt;
     // skip steps already learnt this session, and ones that don't apply to this mode
-    while (t.step < STEPS.length && (t.seen.has(STEPS[t.step].id) || (STEPS[t.step].modes && !STEPS[t.step].modes.includes(g.mode)))) t.step++;
+    while (t.step < STEPS.length && (t.seen.has(STEPS[t.step].id) || (STEPS[t.step].modes && !STEPS[t.step].modes.includes(g.mode)) || (STEPS[t.step].when && !STEPS[t.step].when(p)))) t.step++;
     if (t.step >= STEPS.length) { this.hint = null; return; }
     const s = STEPS[t.step];
     if (t.doneT > 0) {

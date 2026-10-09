@@ -30,6 +30,7 @@ export class Player {
     this._scanSide = 0;
     this._anchorTmp = [];
     this._origins = [new THREE.Vector3(), new THREE.Vector3()];
+    this._modelPos = new THREE.Vector3();
     this.reset(new THREE.Vector3(0, 50.6, 0), 0);
   }
 
@@ -46,7 +47,7 @@ export class Player {
     this.stun = 0; this.grabbedBy = null; this.grabHand = null; this.struggle = 0; this.grabImmune = 0;
     this.reelLevel = 0; this.impactCooldown = 0;
     this.wishF = 0; this.wishR = 0; this.turn = 0; this.wantBoost = false; this._dashPuff = 0;
-    this.shiftHeld = 0; this.payout = false; this.mouseT = 99; this.autoSwapT = 0; this.primeT = 0; this.prey = null; this.preyDist = 1e9; this.swooping = false;
+    this.shiftHeld = 0; this.payout = false; this.mouseT = 99; this.autoSwapT = 0; this.primeT = 0; this.mountCd = 0; if (this.riding) this.riding.rider = null; this.riding = null; this.prey = null; this.preyDist = 1e9; this.swooping = false;
     if (this.targets) for (const t of this.targets) { t.valid = false; t.collider = null; t.titan = null; }
     this.odm.reset();
     this.cam.pos.copy(position).add(new THREE.Vector3(Math.sin(yaw) * -5, 2, Math.cos(yaw) * -5));
@@ -81,6 +82,20 @@ export class Player {
         if (this.struggle >= 1) this._escapeGrab();
       }
       return;
+    }
+
+    // on horseback: ↑ gallops, ← → steer, Shift leaps off, Z / X fire a rope straight off the running horse
+    if (this.riding) {
+      const h = this.riding;
+      h.want.f = F - B; h.want.turn = R - L;
+      this.turn = 0; this.wishF = 0; this.wishR = 0;
+      const shiftHit = input.hit('ShiftLeft') || input.hit('ShiftRight');
+      const rope = input.hit('Z') || input.hit('X') || input.hit('Q') || input.hit('E') || input.hit('Mouse2');
+      if (shiftHit || rope) this._leapOff(shiftHit ? CFG.horse.leap : CFG.horse.ropeLeap);
+      else {
+        if (cut && this.swapT <= 0) this._slash();
+        return;
+      }
     }
 
     // steering: the arrows turn your heading; the camera rides behind it
@@ -299,6 +314,34 @@ export class Player {
     this.cam.trauma = Math.min(1, this.cam.trauma + 0.12);
   }
 
+  /** Run (or fall) into a free horse to mount it, standing on its back. */
+  _tryMount() {
+    const herd = this.game.herd;
+    if (!herd || this.mountCd > 0 || this.odm.attachedCount() || this.speed > CFG.horse.maxMountSpeed) return;
+    for (const h of herd.horses) {
+      if (h.rider || h.mountCd > 0) continue;
+      h.saddle(_e);
+      if (_e.distanceToSquared(this.pos) < CFG.horse.mountRadius ** 2 && this.vel.y < 2) {
+        this.riding = h; h.rider = this; h.speed = Math.max(h.speed, Math.hypot(this.vel.x, this.vel.z) * 0.8);
+        h.yaw = Math.hypot(this.vel.x, this.vel.z) > 3 ? Math.atan2(this.vel.x, this.vel.z) : this.yaw;
+        this.game.audio?.land?.(0.4);
+        this.game.events.emit('player:mounted', { horse: h });
+        return;
+      }
+    }
+  }
+  /** Stand up on the running horse and spring off it: you keep the horse's speed. */
+  _leapOff(up) {
+    const h = this.riding;
+    if (!h) return;
+    this.riding = null; h.rider = null; h.mountCd = 2; this.mountCd = 1.2;
+    h.want.f = 0; h.want.turn = 0;
+    this.vel.copy(h.vel).addScaledVector(this._heading(_e), CFG.horse.leapForward);
+    this.vel.y = up;
+    this.grounded = false; this.groundTime = 1;
+    this.game.audio?.land?.(0.3);
+  }
+
   _swapBlades() {
     if (this.swapT > 0 || this.spares <= 0 || this.blade >= 0.999) return;
     this.spares--; this.swapT = CFG.combat.swapTime;
@@ -316,6 +359,16 @@ export class Player {
     this.prev.copy(this.pos);
     if (!this.alive) { this.vel.set(0, 0, 0); return; }
     if (this.grabbedBy) { this._followHand(); return; }
+    if (this.riding) {
+      const h = this.riding;
+      h.saddle(this.pos); this.vel.copy(h.vel);
+      this.grounded = true; this.groundTime = 0; this.airTime = 0;
+      this.yaw += Math.atan2(Math.sin(h.yaw - this.yaw), Math.cos(h.yaw - this.yaw)) * Math.min(1, dt * 4);
+      this.launcher(0, this._origins[0]); this.launcher(1, this._origins[1]);
+      this.odm.step(dt, this._origins);
+      return;
+    }
+    this._tryMount();
 
     const odm = this.odm;
     this.launcher(0, this._origins[0]); this.launcher(1, this._origins[1]);
@@ -486,7 +539,7 @@ export class Player {
     if (this.grounded) this.airTime = 0; else this.airTime += dt;
 
     // timers
-    this.dashCd -= dt; this.stun -= dt; this.grabImmune -= dt; this.impactCooldown -= dt;
+    this.dashCd -= dt; this.mountCd -= dt; this.stun -= dt; this.grabImmune -= dt; this.impactCooldown -= dt;
     if (this._dashPuff > 0) this._dashPuff -= dt;
     if (this.swapT > 0) { this.swapT -= dt; if (this.swapT <= 0) this.blade = 1; }
     if (this.game.time - this.lastHurt > 4 && this.hp < 1) this.hp = Math.min(1, this.hp + dt * 0.04);
@@ -571,6 +624,7 @@ export class Player {
   // ---------------------------------------------------------------- titan interaction (contract)
   grab(titan, hand) {
     if (!this.alive || this.grabbedBy || this.grabImmune > 0) return false;
+    if (this.riding) { this.riding.rider = null; this.riding = null; }
     this.grabbedBy = titan; this.grabHand = hand; this.struggle = 0;
     this.odm.releaseAll(true);
     this.vel.set(0, 0, 0);
@@ -677,11 +731,11 @@ export class Player {
 
     if (this.model) {
       const hooks = this.odm.hooks.map((h) => ({ attached: h.attached, anchor: h.attached ? h.anchor : null, state: h.state }));
-      const run = this.grounded ? Math.min(1, Math.hypot(v.x, v.z) / CFG.ground.run) : (this.wallN && anchored ? 1 : 0);
+      const run = this.riding ? 0 : this.grounded ? Math.min(1, Math.hypot(v.x, v.z) / CFG.ground.run) : (this.wallN && anchored ? 1 : 0);
       const slash = this.slashT >= 0 ? this.slashT / CFG.combat.slashTime : -1;
       this.boostLevel += ((this.boosting || this._dashPuff > 0 ? 1 : 0) - this.boostLevel) * damp(18, dt);
       this.model.update(dt, {
-        position: this.render, velocity: v, forward: this.forward, up: this.bodyUp,
+        position: this._modelPos.copy(this.render).addScaledVector(this.bodyUp, CFG.modelLift), velocity: v, forward: this.forward, up: this.bodyUp,
         grounded: this.grounded, running: run, hooks, boosting: this.boostLevel, slash,
         spin: this.spin, grabbed: !!this.grabbedBy, blades: this.blade > 0 && this.swapT <= 0, speed,
         alive: this.alive,
