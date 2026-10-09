@@ -14,6 +14,17 @@ const sm = (x) => { x = clamp(x, 0, 1); return x * x * (3 - 2 * x); };
 const wrap = (a) => { a %= TAU; if (a > Math.PI) a -= TAU; else if (a < -Math.PI) a += TAU; return a; };
 let UID = 0;
 
+// ---- keyboard-play tuning (exported for benches / the core)
+export const TITAN_TUNING = {
+  WINDUP: 0.45,                  // s: minimum readable wind-up before every grab reach / swat / bite / leap
+  GRAB_MAX_REL_SPEED: 18,        // m/s: a hand only closes on a player slower than this relative to the hand
+  GRAB_BLOCK_AFTER_ESCAPE: 1.5,  // s: no titan grabs right after the player cuts free
+  LEAP_COOLDOWN: 8,              // s: minimum time between two leaps of one abnormal
+  LEAP_CHANCE: 0.6,              // per second while a leap is possible
+  LEAP_G: 24,                    // m/s²: titan leaps are heavy
+};
+const { WINDUP, GRAB_MAX_REL_SPEED, GRAB_BLOCK_AFTER_ESCAPE, LEAP_COOLDOWN, LEAP_CHANCE, LEAP_G } = TITAN_TUNING;
+
 function mulberry(a) {
   return function () {
     a |= 0; a = (a + 0x6D2B79F5) | 0;
@@ -105,6 +116,19 @@ export class Titan {
     this.vy = 0; this.airborne = false;
     this.steaming = false; this.fadeMats = null; this.deathT = 0; this.fell = false;
 
+    // ---- keyboard-play polish (public): ground velocity, hook points, attack threat
+    /** world velocity of the root (m/s), smoothed; the player uses it for relative cut speed */
+    this.velocity = new V3();
+    /** 0..1: how imminently this titan is attacking the player (1 during a grab/swat/leap wind-up or strike) */
+    this.threat = 0;
+    this._prevPos = new V3(); this._anc = [new V3(), new V3(), new V3(), new V3()];
+    this._handPrev = [new V3(), new V3()]; this._handVel = [new V3(), new V3()]; this._handInit = false;
+    // abnormals: a crawling gait variant and an occasional leap at the player
+    this.crawler = this.abnormal && (o.crawler ?? rnd() < 0.5);
+    this.crawlW = this.crawler ? 1 : 0;
+    this.cdLeap = this.abnormal ? 3 + rnd() * 5 : Infinity;
+    this.leap = { phase: 0, t: 0, W: 0.45, T: 1, target: new V3(), vx: 0, vz: 0 };
+
     // ---- pose buffers
     this.P = {}; this.tq = {};
     for (const n of NAMES) { this.P[n] = [0, 0, 0]; this.tq[n] = new Q(); }
@@ -115,6 +139,7 @@ export class Titan {
     this.position.copy(o.position || ZERO);
     const gh = this._ground(this.position.x, this.position.z);
     this.position.y = gh;
+    this._prevPos.copy(this.position);
     this.home.copy(this.position);
     this.wanderGoal.copy(this.position);
     this._lastPos.copy(this.position);
@@ -213,8 +238,26 @@ export class Titan {
     return { center, normal };
   }
 
+  /**
+   * Good world-space hook points for auto-targeting: back of the head, both shoulder blades and the upper back
+   * just under the nape (where Survey Corps anchor to reach it). Pushes 4 Vector3 into out (reused every call:
+   * copy them if you keep them). Points sit just inside the torso box / head sphere colliders, so a ray from the
+   * player towards one hits this titan's flesh.
+   */
+  anchors(out = []) {
+    if (!this.alive) return out;
+    const d = this.d, A = this._anc, sp = this.J.spine.matrixWorld;
+    A[0].set(0, d.cy + 0.15 * d.ry, d.cz - 0.82 * d.rz).applyMatrix4(this.J.head.matrixWorld);
+    A[1].set(0.62 * d.shoulderX, d.shoulderY + 0.15, -0.72).applyMatrix4(sp);
+    A[2].set(-0.62 * d.shoulderX, d.shoulderY + 0.15, -0.72).applyMatrix4(sp);
+    A[3].set(0, d.shoulderY + 0.45, -0.74).applyMatrix4(sp);
+    out.push(A[0], A[1], A[2], A[3]);
+    return out;
+  }
+
   /** Called when the player cuts itself free of the hand. */
   onGrabEscape() {
+    this.mgr.grabBlockT = Math.max(this.mgr.grabBlockT || 0, GRAB_BLOCK_AFTER_ESCAPE);
     if (this.state !== 'grab') { this._releasePlayer(); return; }
     this._setFist(this.act?.side ?? 0, false); this._setFist(1, false); this._setFist(0, false);
     const hp = this._jpos(this.act?.side === 1 ? 'handR' : 'handL', new V3());
@@ -304,6 +347,7 @@ export class Titan {
   }
   _onCrippled() {
     if (this.state === 'grab') { /* keeps holding */ } else if (this.state === 'reach' || this.state === 'swat' || this.state === 'bite') { this.act = null; this._enter('chase'); }
+    else if (this.state === 'leap' && !this.airborne) { this.cdLeap = LEAP_COOLDOWN; this._enter('chase'); }
     this.game.audio?.titanGroan?.(this.position, this.height);
     const ft = this._jpos('footL', new V3());
     this.game.fx?.steam?.(ft, this.height * 0.15, 2);
@@ -312,6 +356,7 @@ export class Titan {
   _die(point) {
     if (this.dying) return;
     this.alive = false; this.dying = true; this.deathT = 0; this.fell = false;
+    this.airborne = false; this.threat = 0; this.velocity.set(0, 0, 0);
     this._releasePlayer();
     this.fist[0] && this._setFist(0, false); this.fist[1] && this._setFist(1, false);
     this.ik[0].wT = this.ik[1].wT = 0;
@@ -327,8 +372,9 @@ export class Titan {
     dt = Math.min(dt, 0.05);
     if (dt <= 0) return;
     this.t += dt;
-    if (this.dying) { this._updateDying(dt); return; }
+    if (this.dying) { this.velocity.set(0, 0, 0); this.threat = 0; this._updateDying(dt); return; }
     if (this.appearT !== undefined && this.appearT < 0.3) { this.appearT += dt; this.root.visible = this.appearT >= 0.25; }
+    this._prevPos.copy(this.position);
     this._timers(dt);
     this._sense();
     if (this.isColossal) this._thinkColossal(dt); else this._think(dt);
@@ -340,10 +386,49 @@ export class Titan {
     this._applyArmIK(dt);
     this.root.updateMatrixWorld(true);
     this._post(dt);
+    this._updateVelocity(dt);
+    this._updateThreat(dt);
+  }
+
+  _updateVelocity(dt) {
+    const v = _t0.subVectors(this.position, this._prevPos).multiplyScalar(1 / dt);
+    if (v.lengthSq() > 90 * 90) v.set(0, 0, 0);          // teleported (spawn / reposition): not a real velocity
+    this.velocity.lerp(v, 1 - Math.exp(-40 * dt));
+  }
+
+  /** 0..1 danger for the HUD: 1 while a grab reach / swat / bite / leap is winding up or striking. */
+  _updateThreat(dt) {
+    let th = 0;
+    const a = this.act, st = this.state;
+    if (this.hasPlayer && this.blindT <= 0) {
+      if (this.isColossal) {
+        const pl = this.game.player;
+        if (this.sweepT >= 0 && this.sweepT < 3.6 && pl.position.y > 25 && Math.abs(pl.position.z) < 40) th = this.sweepT < 1.4 ? 0.6 + 0.4 * this.sweepT / 1.4 : 1;
+        else if (this.steamOn && this.distH < 45) th = 0.6;
+      } else if (st === 'reach' && a) th = a.t < a.W + a.E + a.H ? 1 : 0.35;
+      else if (st === 'swat' && a) th = a.t < a.W + a.S + 0.1 ? 1 : 0.3;
+      else if (st === 'bite' && a) th = a.t < a.W + a.B ? 0.9 : 0.3;
+      else if (st === 'grab') th = 1;
+      else if (st === 'leap') th = this.leap.phase < 2 ? 1 : 0.45;
+      else if (st === 'chase') {
+        // closing in: up to ~0.45 when inside a couple of arm lengths and facing, more when the attack is ready
+        const A = this.armLen;
+        const near = clamp(1 - (this.dist3 - A) / (2.5 * A), 0, 1);
+        th = 0.45 * near * (Math.abs(this.relYaw) < 1.2 ? 1 : 0.5) * (this.cdAttack < 0.6 ? 1 : 0.6);
+      }
+    }
+    this.threat = th >= this.threat ? th : Math.max(th, this.threat - dt * 2.5);
+  }
+
+  /** May this titan close a hand on the player right now? (difficulty easing for keyboard play) */
+  _grabAllowed() {
+    const pl = this.game.player;
+    return !!pl && !pl.grabbedBy && !((this.mgr.grabBlockT || 0) > 0) && !(pl.grabImmune > 0);
   }
 
   _timers(dt) {
     this.cdAttack = Math.max(0, this.cdAttack - dt);
+    if (this.cdLeap > 0) this.cdLeap -= dt;
     this.flinch = Math.max(0, this.flinch - dt * 2.5);
     this.recoil = Math.max(0, this.recoil - dt * 1.5);
     if (this.blindT > 0) { this.blindT -= dt; if (this.blindT <= 0 && this.state === 'blind') { this.blindT = 0; this._enter('chase'); } }
@@ -398,10 +483,11 @@ export class Titan {
         this.speedTarget = canMove ? this.runSpeed : 0;
         // slow down inside arm reach so we do not run through the player
         if (this.distH < this.armLen * 0.8 + this.footR) this.speedTarget = Math.min(this.speedTarget, this.walkSpeed * 0.2);
-        if (this.mgr.crawlers && this.abnormal) { /* reserved */ }
+        if (this.abnormal && canMove && this._tryLeap(dt)) break;
         this._chooseAttack(k);
         break;
       }
+      case 'leap': this._thinkLeap(dt); break;
       case 'reach': this._thinkReach(dt, k); break;
       case 'grab': this._thinkGrab(dt); break;
       case 'chew': this.stateT > 1.6 && this._enter(this.hasPlayer ? 'chase' : 'idle'); break;
@@ -467,7 +553,7 @@ export class Titan {
 
     if (facing && dMouth < 0.5 * h + 1.5 && rel > 0.3 * h && this.rnd() < 2 * 0.016 * 60 * 0.02) { this._startBite(); return; }
     if (facing && airborne && dS < A * 1.05 * reachMul && dS < 1e3) { this._startSwat(side, k); return; }
-    if (facing && !airborne && rel < this.shoulderH * 0.95) {
+    if (facing && !airborne && rel < this.shoulderH * 0.95 && this._grabAllowed()) {
       // a stooping titan drops its shoulders and leans forward: effective shoulder for ground-level targets
       const fx = Math.sin(this.yaw) * 0.22 * this.shoulderH, fz = Math.cos(this.yaw) * 0.22 * this.shoulderH;
       let bestS = 0, bestD = 1e9;
@@ -484,8 +570,14 @@ export class Titan {
   }
 
   _startReach(side, k) {
-    this.act = { side, t: 0, k, W: 0.32 * k, E: 0.5 * k, H: 0.35 * k, R: 0.55 * k, pred: new V3(), cur: new V3(), start: new V3() };
+    // W: a readable wind-up (lean back, open hand, jaw opens) of at least WINDUP s; E (the actual grab) is unchanged
+    this.act = { side, t: 0, k, W: Math.max(WINDUP, 0.32 * k), E: 0.5 * k, H: 0.35 * k, R: 0.55 * k, pred: new V3(), cur: new V3(), start: new V3() };
+    this._setFist(side, false);
     this._enter('reach');
+    this._windupEvent('grab', this.act.W);
+  }
+  _windupEvent(kind, duration) {
+    this.game.events?.emit?.('titan:windup', { titan: this, kind, duration });
   }
   _thinkReach(dt, k) {
     const a = this.act, pl = this.game.player;
@@ -499,19 +591,26 @@ export class Titan {
       const lead = a.E * 0.7;
       a.pred.copy(pl.position).addScaledVector(pl.velocity || ZERO, lead * 0.9);
     }
-    if (a.t > a.W && a.t < a.W + a.E + a.H && !pl.grabbedBy) {
-      // catch check: palm within reach of the player
+    if (a.t > a.W && a.t < a.W + a.E + a.H && this._grabAllowed()) {
+      // catch check: palm within reach of the player, and the player is not streaking past the hand
+      // (fast ODM flyers are hard to catch: relative speed must be under GRAB_MAX_REL_SPEED)
       const hp = this._jpos(a.side === 0 ? 'handL' : 'handR', _t10);
-      if (hp.distanceTo(pl.position) < 0.55 + 0.055 * this.height) { this._catch(a.side); return; }
+      if (hp.distanceTo(pl.position) < 0.55 + 0.055 * this.height) {
+        const hv = this._handVel[a.side], pv = pl.velocity || ZERO;
+        const rel = Math.hypot(pv.x - hv.x, pv.y - hv.y, pv.z - hv.z);
+        if (rel < GRAB_MAX_REL_SPEED && this._catch(a.side)) return;
+      }
     }
     if (a.t > a.W + a.E + a.H + a.R) { this.act = null; this.cdAttack = (this.abnormal ? 1.2 : 2.2) + this.rnd(); this._enter('chase'); }
   }
   _catch(side) {
     const pl = this.game.player;
+    if (pl.grab) { if (pl.grab(this, this.J[side === 0 ? 'handL' : 'handR']) === false) return false; }
+    else pl.grabbedBy = this;
     this._setFist(side, true);
-    if (pl.grab) pl.grab(this, this.J[side === 0 ? 'handL' : 'handR']); else pl.grabbedBy = this;
     this.act = { side, t: 0, dur: 2.2 };
     this._enter('grab');
+    return true;
   }
   _thinkGrab(dt) {
     const a = this.act, pl = this.game.player;
@@ -530,8 +629,10 @@ export class Titan {
   }
 
   _startSwat(side, k) {
-    this.act = { side, t: 0, k, W: 0.34 * k, S: 0.22 * k, R: 0.65 * k, hit: false, p0: new V3(), p1: new V3(), mid: new V3() };
+    this.act = { side, t: 0, k, W: Math.max(WINDUP, 0.34 * k), S: 0.22 * k, R: 0.65 * k, hit: false, p0: new V3(), p1: new V3(), mid: new V3() };
+    this._setFist(side, false);
     this._enter('swat');
+    this._windupEvent('swat', this.act.W);
   }
   _thinkSwat(dt, k) {
     const a = this.act, pl = this.game.player;
@@ -555,7 +656,7 @@ export class Titan {
     if (a.t > a.W + a.S + a.R) { this.act = null; this.cdAttack = (this.abnormal ? 1.0 : 2.0) + this.rnd(); this._enter('chase'); }
   }
 
-  _startBite() { this.act = { t: 0, W: 0.4, B: 0.18, R: 0.7, hit: false }; this._enter('bite'); }
+  _startBite() { this.act = { t: 0, W: WINDUP, B: 0.18, R: 0.7, hit: false }; this._enter('bite'); this._windupEvent('bite', WINDUP); }
   _thinkBite(dt) {
     const a = this.act, pl = this.game.player;
     if (!a) { this._enter('chase'); return; }
@@ -572,8 +673,126 @@ export class Titan {
     if (a.t > a.W + a.B + a.R) { this.act = null; this.cdAttack = 2 + this.rnd(); this._enter('chase'); }
   }
 
+  // ---------------------------------------------------------------- abnormal leap
+  /** Abnormals pounce at a player on (or near) the ground: ballistic arc, never across the wall, ≥ LEAP_COOLDOWN apart. */
+  _tryLeap(dt) {
+    if (this.cdLeap > 0 || this.blindT > 0 || this.stunT > 0 || !this.hasPlayer) return false;
+    const pl = this.game.player, h = this.height, pos = this.position;
+    if (pl.grabbedBy || Math.abs(this.relYaw) > 0.55) return false;
+    const dMin = Math.max(9, 1.8 * this.armLen), dMax = Math.min(46, 6 + 5 * h);
+    if (this.distH < dMin || this.distH > dMax) return false;
+    const gp = this._ground(pl.position.x, pl.position.z);
+    if (pl.position.y - gp > 0.6 * h + 2) return false;                     // player up on a roof / wall: no pounce
+    if (this.rnd() > dt * LEAP_CHANCE) return false;                         // occasional, not the moment it is possible
+    // landing point: just short of where the player will be
+    const v = pl.velocity || ZERO, lead = 0.4;
+    let tx = pl.position.x + v.x * lead, tz = pl.position.z + v.z * lead;
+    let dx = tx - pos.x, dz = tz - pos.z;
+    let dist = Math.hypot(dx, dz);
+    if (dist < 1e-3) return false;
+    const land = clamp(dist - (0.45 * this.armLen + 0.5), dMin * 0.6, dMax);
+    tx = pos.x + dx / dist * land; tz = pos.z + dz / dist * land;
+    tx = clamp(tx, -1095, 1095); tz = clamp(tz, -645, 1045);
+    // never through the wall: both ends clearly on the same side of it (a straight segment then cannot cross it)
+    const band = 6 + this.footR + 2;
+    if (Math.abs(pos.z) < band || Math.abs(tz) < band || Math.sign(pos.z) !== Math.sign(tz)) return false;
+    // landing spot and the apex of the arc must be free of houses / trunks
+    const col = this.game.collision, r = this.footR;
+    const gl = this._ground(tx, tz);
+    const T = clamp(0.55 + 0.016 * land + 0.012 * h, 0.75, 1.35);
+    if (col && col.collideSphere) {
+      if (this._blocked(col, _c0.set(tx, gl + r + 0.3, tz), r)) return false;
+      const apex = LEAP_G * T * T / 8;
+      if (this._blocked(col, _c0.set((pos.x + tx) / 2, (this.position.y + gl) / 2 + apex + r, (pos.z + tz) / 2), r)) return false;
+    }
+    const L = this.leap;
+    L.phase = 0; L.t = 0; L.W = WINDUP; L.T = T; L.target.set(tx, gl, tz);
+    this.act = null;
+    this._enter('leap');
+    this._windupEvent('leap', L.W);
+    return true;
+  }
+  _blocked(col, c, r) {
+    const cs = col.collideSphere(c, r, { dynamic: false });
+    for (let i = 0; i < cs.length; i++) {
+      const k = cs[i];
+      if (k.collider.material === 'ground' || k.collider.type === 'ground' || Math.abs(k.normal.y) > 0.75) continue;
+      return true;
+    }
+    return false;
+  }
+  _thinkLeap(dt) {
+    const L = this.leap, pos = this.position;
+    L.t += dt; this.speedTarget = 0;
+    this.faceYaw = Math.atan2(L.target.x - pos.x, L.target.z - pos.z);
+    if (L.phase === 0) {
+      this.speed *= Math.exp(-7 * dt);                     // plant the feet for the crouch
+      if (L.t >= L.W) {
+        // launch: horizontal speed covers the distance in T, vertical speed returns to the landing height in T
+        const dx = L.target.x - pos.x, dz = L.target.z - pos.z;
+        L.vx = dx / L.T; L.vz = dz / L.T;
+        this.vy = (L.target.y - pos.y) / L.T + 0.5 * LEAP_G * L.T;
+        this.airborne = true; this.speed = 0;
+        this.yaw = wrap(Math.atan2(dx, dz));
+        L.phase = 1; L.t = 0;
+        this.game.audio?.titanGroan?.(pos, this.height);
+        this.game.fx?.impact?.(_t20.set(pos.x, pos.y + 0.1, pos.z), UP, 'ground');
+      }
+    } else if (L.phase === 1 && !this.airborne) { L.phase = 2; L.t = 0; }
+    else if (L.phase === 2 && L.t > 0.6) {
+      this.cdAttack = Math.max(this.cdAttack, 0.8);
+      this._enter('chase');
+    }
+  }
+  /** ballistic step while airborne (leaps); returns true when it handled the movement this frame */
+  _flight(dt) {
+    if (!this.airborne) return false;
+    const pos = this.position, L = this.leap;
+    const px = pos.x, pz = pos.z;
+    pos.x += L.vx * dt; pos.z += L.vz * dt;
+    this.vy -= LEAP_G * dt; pos.y += this.vy * dt;
+    this._collide();
+    this._wallClamp(px, pz);
+    pos.x = clamp(pos.x, -1100, 1100); pos.z = clamp(pos.z, -650, 1050);
+    const gy = this._ground(pos.x, pos.z);
+    if (this.vy < 0 && pos.y <= gy) { pos.y = gy; this._land(); }
+    this._lastPos.copy(pos);
+    return true;
+  }
+  _land() {
+    const pos = this.position, h = this.height, pl = this.game.player;
+    this.airborne = false; this.vy = 0;
+    if (this.state === 'leap') { this.leap.phase = 2; this.leap.t = 0; }
+    this.cdLeap = LEAP_COOLDOWN + this.rnd() * 4;
+    const p = pos.clone();                                  // event payload (kept by listeners): one per landing
+    const fx = this.game.fx;
+    if (fx?.impact) {
+      fx.impact(p, UP, 'ground');
+      for (let i = 0; i < 3; i++) {
+        const a = this.rnd() * TAU, r = this.footR * (1 + this.rnd());
+        fx.impact(_t20.set(pos.x + Math.sin(a) * r, pos.y + 0.1, pos.z + Math.cos(a) * r), UP, 'ground');
+      }
+    }
+    this.game.audio?.titanStep?.(p, 2 * h);
+    this.game.events?.emit?.('titan:step', { position: p, size: 2 * h, titan: this });
+    // crushed / knocked flat by the landing
+    if (this.hasPlayer && pl.alive && !pl.grabbedBy) {
+      const dx = pl.position.x - pos.x, dz = pl.position.z - pos.z, dH = Math.hypot(dx, dz), up = pl.position.y - pos.y;
+      if (up < 0.6 * h && dH < 0.25 * h + 2) {
+        const d = _t11.set(dx, 0, dz); if (d.lengthSq() < 1e-4) d.set(Math.sin(this.yaw), 0, Math.cos(this.yaw));
+        d.normalize(); d.y = 0.45; d.normalize().multiplyScalar(16 + 0.6 * h);
+        pl.applyImpulse?.(d, 15 + 1.5 * h);
+      } else if (up < 2.5 && dH < 1.2 * h + 3) {
+        const d = _t11.set(dx, 0, dz); if (d.lengthSq() < 1e-4) d.set(0, 0, 1);
+        d.normalize(); d.y = 0.6; d.normalize().multiplyScalar(7);
+        pl.applyImpulse?.(d, 0);
+      }
+    }
+  }
+
   // ====================================================================================== movement
   _locomote(dt) {
+    if (this._flight(dt)) return;
     const pos = this.position, h = this.height;
     // ----- desired heading / speed
     let wantYaw = this.yaw, wantSpeed = this.speedTarget, goalDirValid = false;
@@ -649,7 +868,8 @@ export class Titan {
     const pos = this.position, r = this.footR;
     const gy = this._ground(pos.x, pos.z);
     let sx = 0, sz = 0;
-    for (const dist of [r * 1.5 + 1, r * 1.5 + 1 + Math.max(speed, 2) * 1.1]) {
+    for (let pass = 0; pass < 2; pass++) {
+      const dist = r * 1.5 + 1 + (pass ? Math.max(speed, 2) * 1.1 : 0);
       _c0.set(pos.x + dir.x * dist, gy + r * 1.05 + 0.4, pos.z + dir.z * dist);
       const cs = col.collideSphere(_c0, r * 1.1, { dynamic: false });
       for (const c of cs) {
@@ -732,7 +952,10 @@ export class Titan {
     this.hipT.y += 0.03 * br;
 
     // ---- locomotion (not for the colossal, which stands its ground)
-    if (!this.isColossal) { if (crippled) this._poseKneel(); else this._poseGait(dt); }
+    if (!this.isColossal) {
+      if (crippled) this._poseKneel(); else this._poseGait(dt);
+      if (this.crawler) this._poseCrawl(dt);
+    }
 
     // ---- state overlays
     if (this.isColossal) this._poseColossal(dt);
@@ -777,7 +1000,7 @@ export class Titan {
     const rf = clamp(sp / this.runSpeed, 0, 1.4);
     if (m <= 0.001) return;
     const legLen = (d.thighLen + d.shinLen) * 0.97 * s;
-    const stepLen = h * (0.30 + 0.30 * Math.min(rf, 1.2)) * (this.abnormal ? 1.15 : 1);
+    const stepLen = h * (0.30 + 0.30 * Math.min(rf, 1.2)) * (this.abnormal ? 1.15 : 1) * (1 - 0.3 * this.crawlW);
     this.gait += Math.PI * sp / stepLen * dt;
     const amp = Math.asin(clamp(stepLen * 0.5 / legLen, 0, 0.8)) * m;
     const ph = this.gait;
@@ -834,6 +1057,43 @@ export class Titan {
     P.armL[0] += -0.35; P.armR[0] += -0.35;
   }
 
+  /**
+   * Crawling abnormal: torso pitched nearly flat, hips dropped on bent legs, hands planted on the ground ahead of
+   * the shoulders in a trot (left hand with the right foot). Blends out (rears up) for attacks, stuns and blindness.
+   */
+  _poseCrawl(dt) {
+    const st = this.state;
+    const want = this.crippleT <= 0 && this.blindT <= 0 && !this.airborne && (st === 'idle' || st === 'wander' || st === 'chase') ? 1 : 0;
+    this.crawlW += (want - this.crawlW) * (1 - Math.exp(-7 * dt));
+    const w = this.crawlW;
+    if (w < 0.01) return;
+    const P = this.P, d = this.d, s = this.s;
+    // pitch: pelvis + spine; thigh / shin world angles from vertical (negative = forward); feet flat
+    const PP = 1.0, SP = 0.32, TA = -0.85, SA = 0.55;
+    P.pelvis[0] += PP * w; P.spine[0] += SP * w;
+    P.thighL[0] += (TA - PP) * w; P.thighR[0] += (TA - PP) * w;
+    P.shinL[0] += (SA - TA) * w; P.shinR[0] += (SA - TA) * w;
+    P.footL[0] += -SA * w; P.footR[0] += -SA * w;
+    P.thighL[2] += 0.14 * w; P.thighR[2] -= 0.14 * w;
+    this.hipT.y -= w * (d.thighLen * (1 - Math.cos(TA)) + d.shinLen * (1 - Math.cos(SA)));
+    this.jawExtra += 0.25 * w;
+    // hands: ground targets in the titan's yaw frame, swinging with the gait phase
+    const m = clamp(this.speed / 0.8, 0, 1), rf = clamp(this.speed / this.runSpeed, 0, 1.4);
+    const stepLen = this.height * (0.30 + 0.30 * Math.min(rf, 1.2)) * 1.15 * 0.7;
+    const reachZ = (d.spineY + d.shoulderY) * Math.sin(PP + SP) * s + 0.32 * this.armLen;
+    const gy = this.position.y + 0.45 * d.handS * s;
+    for (let i = 0; i < 2; i++) {
+      if (this.severed[i] > 0) continue;
+      const pa = this.gait + (i === 0 ? Math.PI : 0);        // left hand pairs with the right foot
+      const z = reachZ + 0.5 * stepLen * Math.sin(pa) * m;
+      const lift = 0.18 * stepLen * m * Math.max(0, Math.cos(pa));
+      this._fp(sideSign(i) * d.shoulderX * s * 1.2, 0, z, _tw);
+      _tw.y = gy + lift;
+      this._arm(i, _tw, this._pole(i, 0.55, -1, 0.15), 16);
+      this.ik[i].wT = w;
+    }
+  }
+
   /** arm IK request. targetWorld: Vector3, poleLocal: direction in spine space the elbow should point to */
   _arm(side, target, pole, rate = 14) {
     const a = this.ik[side];
@@ -861,6 +1121,7 @@ export class Titan {
       return;
     }
     switch (st) {
+      case 'leap': this._poseLeap(dt); break;
       case 'reach': if (a) this._poseReach(dt); break;
       case 'grab': if (a) this._poseGrab(dt); break;
       case 'swat': if (a) this._poseSwat(dt); break;
@@ -889,15 +1150,17 @@ export class Titan {
     let w;
     if (a.t < a.W) {
       w = sm(a.t / a.W);
-      // wind up: arm back and out, torso leans back
-      this._fp(sg * (this.d.shoulderX * this.s + 0.25 * A), this.shoulderH + 0.1 * A, -0.5 * A, _tw);
+      // wind up (readable tell): arm cocked back, high and out with the hand open, torso and head lean back, jaw drops
+      this._fp(sg * (this.d.shoulderX * this.s + 0.35 * A), this.shoulderH + 0.25 * A, -0.45 * A, _tw);
       this._arm(side, _tw, this._pole(side, 0.8, -0.4, -0.2), 16);
-      P.spine[0] += -0.15 * w; P.spine[1] += sg * 0.25 * w;
-      P.armL[2] += 0.0;
+      P.spine[0] += -0.24 * w; P.spine[1] += sg * 0.3 * w;
+      P.neck[0] += -0.12 * w; P.head[0] += -0.22 * w;
+      this.jawExtra += 0.45 * w;
     } else {
       const u = clamp((a.t - a.W) / a.E, 0, 1);
       const e = a.t < tE ? sm(u) : 1;
-      this._fp(sg * (this.d.shoulderX * this.s + 0.25 * A), this.shoulderH + 0.1 * A, -0.5 * A, _tw);
+      this.jawExtra += 0.45 * (1 - e) + 0.15;
+      this._fp(sg * (this.d.shoulderX * this.s + 0.35 * A), this.shoulderH + 0.25 * A, -0.45 * A, _tw);
       _tw2.copy(a.pred);
       if (a.t >= tE && this.hasPlayer) a.pred.lerp(this.game.player.position, 0.15);
       _tw.lerp(_tw2, e);
@@ -952,7 +1215,10 @@ export class Titan {
       e = 0; w = sm(a.t / a.W);
       _tw.copy(a.p0); _tw.y = Math.max(_tw.y, sh.y + 0.15 * A);
       _tw.lerp(_tw3.copy(sh).add(_t19.set(sg * 0.5 * A, 0.3 * A, 0).applyAxisAngle(UP, this.yaw)), 1 - w);
-      P.spine[1] += sg * 0.35 * w; P.spine[0] += -0.1 * w;
+      // wind-up tell: twist away, lean back, head back, jaw open
+      P.spine[1] += sg * 0.4 * w; P.spine[0] += -0.2 * w;
+      P.neck[0] += -0.1 * w; P.head[0] += -0.18 * w;
+      this.jawExtra += 0.45 * w;
     } else if (a.t < tS) {
       e = sm((a.t - a.W) / a.S);
       _tw.copy(a.p0).lerp(a.p1, e);
@@ -972,6 +1238,44 @@ export class Titan {
     else if (a.t < a.W + a.B) { const u = sm((a.t - a.W) / a.B); P.head[0] += lerp(-0.35, 0.4, u); P.neck[0] += 0.3 * u; P.spine[0] += lerp(-0.15, 0.45, u); this.jawExtra += 0.9 * (1 - u); }
     else { const u = sm((a.t - a.W - a.B) / a.R); P.head[0] += 0.4 * (1 - u); P.neck[0] += 0.3 * (1 - u); P.spine[0] += 0.45 * (1 - u); this.jawExtra += 0.1 * (1 - u); }
     this.rate = 22;
+  }
+
+  /** leap: deep crouch with arms thrown back (wind-up), arms-first dive (air), heavy squat with hands slammed down (landing) */
+  _poseLeap() {
+    const P = this.P, d = this.d, L = this.leap;
+    const crouch = (k, lean) => {
+      // thighs 0.95 rad forward, shins 0.65 back (world), feet flat; pelvis pitched by `lean`
+      const TA = -0.95, SA = 0.65;
+      P.pelvis[0] += lean * k; P.spine[0] += lean * k;
+      P.thighL[0] += (TA - lean) * k; P.thighR[0] += (TA - lean) * k;
+      P.shinL[0] += (SA - TA) * k; P.shinR[0] += (SA - TA) * k;
+      P.footL[0] += -SA * k; P.footR[0] += -SA * k;
+      this.hipT.y -= k * (d.thighLen * (1 - Math.cos(TA)) + d.shinLen * (1 - Math.cos(SA)));
+    };
+    if (L.phase === 0) {
+      const w = sm(L.t / L.W);
+      crouch(w, 0.35);
+      P.armL[0] += 0.9 * w; P.armR[0] += 0.9 * w; P.armL[2] += 0.25 * w; P.armR[2] -= 0.25 * w;
+      P.foreL[0] -= 0.4 * w; P.foreR[0] -= 0.4 * w;
+      this.jawExtra += 0.6 * w;
+      this.rate = 16; this.legRate = 20;
+    } else if (L.phase === 1) {
+      const u = clamp(L.t / L.T, 0, 1), tuck = u < 0.65 ? 1 : 1 - sm((u - 0.65) / 0.35);
+      P.spine[0] += 0.45; P.pelvis[0] += 0.15;
+      P.armL[0] += -2.2; P.armR[0] += -2.2; P.armL[2] += 0.45; P.armR[2] -= 0.45;
+      P.foreL[0] -= 0.2; P.foreR[0] -= 0.2;
+      // legs trail behind, then swing under for the landing
+      P.thighL[0] += lerp(-0.7, 0.35, tuck); P.thighR[0] += lerp(-0.8, 0.5, tuck);
+      P.shinL[0] += lerp(0.9, 1.1, tuck); P.shinR[0] += lerp(0.9, 1.2, tuck);
+      this.jawExtra += 0.85;
+      this.rate = 12; this.legRate = 14;
+    } else {
+      const v = 1 - sm(L.t / 0.6);
+      crouch(1.15 * v, 0.55);
+      P.armL[0] += -0.9 * v; P.armR[0] += -0.9 * v; P.armL[2] += 0.3 * v; P.armR[2] -= 0.3 * v;
+      this.jawExtra += 0.4 * v;
+      this.rate = 18; this.legRate = 24;
+    }
   }
 
   _applyPose(dt) {
@@ -1002,9 +1306,16 @@ export class Titan {
     }
   }
 
-  _post() {
+  _post(dt) {
     // pose is final; keep helpers current. Footsteps for huge titans etc. are handled in the gait.
     if (this.state === 'grab' && this.act && !this.act.start) this.act.start = this._jpos(this.act.side === 0 ? 'handL' : 'handR', new V3());
+    // palm velocities (for the grab's relative-speed check)
+    for (let i = 0; i < 2; i++) {
+      const hp = this._jpos(i === 0 ? 'handL' : 'handR', _t21), prev = this._handPrev[i];
+      if (this._handInit) this._handVel[i].subVectors(hp, prev).multiplyScalar(1 / dt);
+      prev.copy(hp);
+    }
+    this._handInit = true;
   }
 
   // ====================================================================================== colossal

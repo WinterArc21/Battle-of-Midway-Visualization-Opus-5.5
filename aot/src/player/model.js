@@ -13,8 +13,15 @@
 // of the whole body; `root` only translates, the `pivot` child carries the orientation. The cape is simulated in the
 // root-relative world-aligned frame (a translating, non-rotating frame): inertial pseudo-force = -body acceleration
 // (clamped), air drag against the apparent wind (-velocity), so it streams behind at speed and flutters.
+//
+// Draw calls: the soldier is modelled as ~100 small parts on 15 animated joint groups (+ the two blade groups), then
+// _bake() packs them: every static part is baked into ONE rigidly skinned body mesh (each vertex weighted 1.0 to its
+// joint group, so it moves exactly like the per-part meshes did) with per-vertex colour + emissive on one shared
+// toon material, and every cel outline into ONE baked inverted hull (offsets pre-applied, per-vertex outline colour).
+// Each blade is one mesh + one hull. Colour pass: 2 body + 4 blades + 3 cape = 9 calls (+1 gas jet while boosting);
+// shadow pass: body, 2 blades, cape = 4 (was ~180 + ~90).
 import * as THREE from 'three';
-import { toonMaterial, addOutline } from '../core/style.js';
+import { toonMaterial } from '../core/style.js';
 
 const TAU = Math.PI * 2;
 const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
@@ -293,16 +300,90 @@ const SPX = 0, SPY = 1, SPZ = 2, HDX = 3, HDY = 4,
 
 const kf = (q, v0, v1, v2, v3) => (q < 0.2 ? lerp(v0, v1, sstep(0, 0.2, q)) : q < 0.58 ? lerp(v1, v2, sstep(0.2, 0.58, q)) : lerp(v2, v3, sstep(0.58, 1, q)));
 
+// a modelling part: a temporary Mesh in the joint hierarchy; _bake() merges it away. `outline` = hull thickness (m).
 function mesh(geo, mat, parent, x = 0, y = 0, z = 0, outline = 0.01) {
   const m = new THREE.Mesh(geo, mat);
   m.position.set(x, y, z);
-  m.castShadow = true;
-  if (outline > 0) addOutline(m, outline);
+  m.userData.ol = outline;
   if (parent) parent.add(m);
   return m;
 }
 function group(parent, x = 0, y = 0, z = 0) {
   const g = new THREE.Group(); g.position.set(x, y, z); if (parent) parent.add(g); return g;
+}
+
+// ───────────────────────────────────────────── part baking (draw-call merge) ─────────────────────────────────
+const OUTLINE_COLOR = 0x1a1410;      // = core/style.js outlineMaterial default
+/** Toon material driven by vertex colour + a per-vertex emissive (aEmis.rgb) + aEmis.a × uFlash (the blade shine). */
+function vcMaterial(flash = 0x000000) {
+  const m = toonMaterial(0xffffff, { vertexColors: true });
+  const u = { value: new THREE.Color(flash) };
+  m.userData.flash = u.value;
+  m.onBeforeCompile = (sh) => {
+    sh.uniforms.uFlash = u;
+    sh.vertexShader = 'attribute vec4 aEmis;\nvarying vec4 vEmis;\n' +
+      sh.vertexShader.replace('#include <color_vertex>', '#include <color_vertex>\n\tvEmis = aEmis;');
+    sh.fragmentShader = 'uniform vec3 uFlash;\nvarying vec4 vEmis;\n' +
+      sh.fragmentShader.replace('vec3 totalEmissiveRadiance = emissive;', 'vec3 totalEmissiveRadiance = vEmis.rgb + vEmis.a * uFlash;');
+  };
+  m.customProgramCacheKey = () => 'wof-vc-emis';
+  return m;
+}
+let _bodyMat = null, _hullMat = null;
+const bodyMaterial = () => (_bodyMat ||= vcMaterial());
+// inverted hull with the offsets baked into the geometry: plain back faces, per-vertex outline colour
+const hullMaterial = () => (_hullMat ||= new THREE.MeshBasicMaterial({ color: 0xffffff, vertexColors: true, side: THREE.BackSide, fog: true }));
+
+/**
+ * Bakes parts [{ m: Mesh, rel: Matrix4 (part → joint), bone }] into one geometry (+ one outline-hull geometry).
+ * Colour = the part material's colour; emissive = its emissive (an unlit MeshBasicMaterial part → black diffuse +
+ * emissive = its colour, which renders identically); a part flagged userData.flash takes the uFlash uniform instead.
+ * Hull vertices = rel · (p + normalize(n) · thickness), exactly what the inverted-hull outline shader did per part.
+ */
+function bakeParts(parts, skinned) {
+  const P = [], N = [], C = [], E = [], B = [], I = [];
+  const HP = [], HC = [], HB = [], HI = [];
+  const nm = new THREE.Matrix3(), v = new THREE.Vector3(), n = new THREE.Vector3(), h = new THREE.Vector3();
+  const col = new THREE.Color(), em = new THREE.Color(), oc = new THREE.Color();
+  for (const { m, rel, bone } of parts) {
+    const g = m.geometry, mat = m.material, pa = g.attributes.position, na = g.attributes.normal;
+    nm.getNormalMatrix(rel);
+    const flash = m.userData.flash ? 1 : 0;
+    if (mat.isMeshBasicMaterial) { col.setRGB(0, 0, 0); em.copy(mat.color); }
+    else { col.copy(mat.color); if (flash) em.setRGB(0, 0, 0); else em.copy(mat.emissive); }
+    const ol = m.userData.ol || 0;
+    oc.setHex(m.userData.olColor ?? OUTLINE_COLOR);
+    const base = P.length / 3, hbase = HP.length / 3;
+    for (let i = 0; i < pa.count; i++) {
+      v.fromBufferAttribute(pa, i); n.fromBufferAttribute(na, i);
+      if (ol > 0) {
+        h.copy(n).normalize().multiplyScalar(ol).add(v).applyMatrix4(rel);
+        HP.push(h.x, h.y, h.z); HC.push(oc.r, oc.g, oc.b); HB.push(bone);
+      }
+      v.applyMatrix4(rel); n.applyNormalMatrix(nm);
+      P.push(v.x, v.y, v.z); N.push(n.x, n.y, n.z); C.push(col.r, col.g, col.b); E.push(em.r, em.g, em.b, flash); B.push(bone);
+    }
+    const ix = g.index ? g.index.array : null, cnt = ix ? ix.length : pa.count;
+    for (let k = 0; k < cnt; k++) { const j = ix ? ix[k] : k; I.push(base + j); if (ol > 0) HI.push(hbase + j); }
+  }
+  const skin = (geo, bones) => {
+    if (!skinned) return;
+    const si = new Uint16Array(bones.length * 4), sw = new Float32Array(bones.length * 4);
+    for (let i = 0; i < bones.length; i++) { si[i * 4] = bones[i]; sw[i * 4] = 1; }
+    geo.setAttribute('skinIndex', new THREE.BufferAttribute(si, 4));
+    geo.setAttribute('skinWeight', new THREE.BufferAttribute(sw, 4));
+  };
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(N, 3));
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(C, 3));
+  geo.setAttribute('aEmis', new THREE.Float32BufferAttribute(E, 4));
+  geo.setIndex(I); skin(geo, B);
+  const hull = new THREE.BufferGeometry();
+  hull.setAttribute('position', new THREE.Float32BufferAttribute(HP, 3));
+  hull.setAttribute('color', new THREE.Float32BufferAttribute(HC, 3));
+  hull.setIndex(HI); skin(hull, HB);
+  return { geo, hull };
 }
 
 // reusable scratch
@@ -438,7 +519,7 @@ export class PlayerModel {
       sh2.moveTo(-0.022, 0); sh2.lineTo(0.022, 0); sh2.lineTo(0.022, -L * 0.93); sh2.lineTo(-0.022, -L); sh2.lineTo(-0.022, 0);
       const bg = new THREE.ExtrudeGeometry(sh2, { depth: 0.006, bevelEnabled: false });
       bg.translate(0, -0.12, -0.003);
-      const bm = new THREE.Mesh(bg, M.blade); bm.castShadow = true; addOutline(bm, 0.004, 0x2b3440); blade.add(bm);
+      const bm = new THREE.Mesh(bg, M.blade); Object.assign(bm.userData, { ol: 0.004, olColor: 0x2b3440, flash: true }); blade.add(bm);
       const fuller = new THREE.Mesh(new THREE.BoxGeometry(0.008, L * 0.8, 0.0075), new THREE.MeshBasicMaterial({ color: 0xffffff }));
       fuller.position.set(0, -0.12 - L * 0.46, 0); blade.add(fuller);
       const handle = [grip];
@@ -495,6 +576,7 @@ export class PlayerModel {
     // gas nozzle & jet cone
     this.nozzle = new THREE.Object3D(); this.nozzle.position.set(0, -0.06, -0.205); P.add(this.nozzle);
     const jet = new THREE.Mesh(new THREE.ConeGeometry(0.05, 1, 10, 1, true), M.jet);
+    jet.userData.keep = true;                    // its own mesh (additive, scaled per frame), not baked
     jet.geometry.translate(0, -0.5, 0);           // apex at the nozzle, opens along -Y
     jet.rotation.x = 0.34;                       // along (0,-1,-0.35)
     jet.frustumCulled = false; jet.visible = false; jet.raycast = () => {};
@@ -517,7 +599,55 @@ export class PlayerModel {
       this.pins.push(mk(chest, x, 0.43 + 0.02 * (1 - Math.pow(x / 0.23, 2)) - 0.012 * Math.abs(x / 0.23), -0.02 - 0.085 * (1 - Math.pow(x / 0.23, 2))));
     }
     this.j.blades = [J.armL.blade, J.armR.blade];
+    this._bake(J);
     this.root.traverse((o) => { if (o.isMesh && !o.userData.noShadow) o.receiveShadow = false; });
+  }
+
+  /** Merge every modelling part into the skinned body / blade meshes (see the header). Joint groups stay as they are. */
+  _bake(J) {
+    const bones = [this.pivot, J.spine, J.head];
+    for (const a of [J.armL, J.armR]) bones.push(a.sh, a.el, a.wr);
+    for (const l of [J.legL, J.legR]) bones.push(l.hip, l.kn, l.an);
+    const boneIx = new Map(bones.map((b, i) => [b, i]));
+    const blades = this.j.blades;
+    const body = [], bladeParts = [[], []], meshes = [];
+    this.root.updateMatrixWorld(true);
+    this.root.traverse((o) => { if (o.isMesh && !o.userData.keep) meshes.push(o); });
+    const inv = new THREE.Matrix4();
+    for (const m of meshes) {
+      let owner = m.parent;
+      while (!boneIx.has(owner) && !blades.includes(owner)) owner = owner.parent;
+      const rel = new THREE.Matrix4().multiplyMatrices(inv.copy(owner.matrixWorld).invert(), m.matrixWorld);
+      const bi = blades.indexOf(owner);
+      (bi >= 0 ? bladeParts[bi] : body).push({ m, rel, owner, bone: boneIx.get(owner) ?? 0 });
+    }
+    // non-mesh helpers hanging off a part (the pelvis cape-collider point) move to the joint, same world transform
+    for (const { m, owner } of [...body, ...bladeParts[0], ...bladeParts[1]]) {
+      for (const c of [...m.children]) if (!c.isMesh) owner.attach(c);
+    }
+    for (const m of meshes) { m.removeFromParent(); m.geometry.dispose(); }
+
+    // body: one rigidly skinned mesh + its hull, both driven by the joint groups (identity bind: verts are joint-local)
+    const { geo, hull } = bakeParts(body, true);
+    this.skeleton = new THREE.Skeleton(bones, bones.map(() => new THREE.Matrix4()));
+    const reach = new THREE.Sphere(new THREE.Vector3(), 2.0);    // body-centred bound for frustum culling (any pose)
+    const mk = (g, mat) => {
+      const sm = new THREE.SkinnedMesh(g, mat);
+      sm.bind(this.skeleton, new THREE.Matrix4());
+      sm.boundingSphere = reach.clone();
+      this.root.add(sm);
+      return sm;
+    };
+    this.body = mk(geo, bodyMaterial()); this.body.castShadow = true;
+    this.bodyHull = mk(hull, hullMaterial()); this.bodyHull.raycast = () => {};
+    // blades: one mesh + one hull each, inside the blade group (shown / hidden with it); shine = this.bladeMat's uFlash
+    this.bladeMat = vcMaterial(0x4d5f72);
+    for (let i = 0; i < 2; i++) {
+      const b = bakeParts(bladeParts[i], false);
+      const bm = new THREE.Mesh(b.geo, this.bladeMat); bm.castShadow = true;
+      const bh = new THREE.Mesh(b.hull, hullMaterial()); bh.raycast = () => {};
+      blades[i].add(bm, bh);
+    }
   }
 
   _buildCapeMesh() {
@@ -536,9 +666,12 @@ export class PlayerModel {
     this.capeGeo = g;
     const outer = toonMaterial(0xffffff, { map: makeCapeTexture(), side: THREE.FrontSide });
     const inner = toonMaterial(0x23442b, { side: THREE.BackSide });
+    // one shadow draw for both faces (before: outer drew its back faces, inner its front faces = the same union)
+    outer.shadowSide = THREE.DoubleSide;
     this.capeMat = outer;
     this.capeOuter = new THREE.Mesh(g, outer); this.capeInner = new THREE.Mesh(g, inner);
-    for (const m of [this.capeOuter, this.capeInner]) { m.frustumCulled = false; m.castShadow = true; this.root.add(m); }
+    for (const m of [this.capeOuter, this.capeInner]) { m.frustumCulled = false; this.root.add(m); }
+    this.capeOuter.castShadow = true;
     // thin dark rim along the cape edges (cel outline)
     const lg = new THREE.BufferGeometry();
     const li = [];
@@ -550,7 +683,11 @@ export class PlayerModel {
   }
 
   setVisible(v) { this.root.visible = v; }
-  dispose() { this.root.traverse((o) => { if (o.geometry) o.geometry.dispose(); }); }
+  dispose() {
+    this.root.traverse((o) => { if (o.geometry) o.geometry.dispose(); });
+    if (this.skeleton) this.skeleton.dispose();
+    if (this.bladeMat) this.bladeMat.dispose();
+  }
 
   // ───────────────────────────── contract helpers ─────────────────────────────
   hookOrigin(side, out) {
@@ -803,7 +940,7 @@ export class PlayerModel {
     const flashT = slashing ? Math.sin(clamp(this.slashP, 0, 1) * Math.PI) : 0;
     this.bladeFlash += (Math.max(flashT, this.wSpin) - this.bladeFlash) * k(30);
     const bf = this.bladeFlash;
-    this.mats.blade.emissive.setRGB(0.30 + 0.65 * bf, 0.37 + 0.6 * bf, 0.45 + 0.55 * bf);
+    this.bladeMat.userData.flash.setRGB(0.30 + 0.65 * bf, 0.37 + 0.6 * bf, 0.45 + 0.55 * bf);
 
     // ── gas jet
     const boost = this.wBoost;
@@ -816,6 +953,7 @@ export class PlayerModel {
 
     // ── matrices, then the cape sim in the root-relative frame
     this.root.updateMatrixWorld(true);
+    this.skeleton.update();               // bone matrices now (also right for a shadow pass when the body is off-screen)
     const cp = this.cape, rp = this.root.position;
     for (let c = 0; c < CC; c++) {
       _v1.setFromMatrixPosition(this.pins[c].matrixWorld);

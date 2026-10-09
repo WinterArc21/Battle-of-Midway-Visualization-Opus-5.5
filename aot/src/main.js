@@ -256,7 +256,7 @@ function hudState(playing) {
         // radar mapping: straight ahead is up, behind you is down
         _tp.subVectors(t.position, camera.position);
         const angle = Math.atan2(_tp.dot(_cr), _tp.x * _cf.x + _tp.z * _cf.z);
-        _threats.push({ x: m.x, y: m.y, angle, danger: Math.max(t.threat || 0, d < 25 ? 0.5 : 0), distance: d });
+        _threats.push({ angle, danger: (t.threat || 0) > 0.5 || d < 25, distance: d });
       }
     }
     for (let i = 0; i < 2; i++) {

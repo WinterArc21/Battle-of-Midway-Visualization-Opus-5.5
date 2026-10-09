@@ -22,6 +22,8 @@
 //   #fx             live effects showcase  #steam #blood #gas #sparks #impact #leaves #slasharc  frozen shots
 //   #lightning-<age seconds>               frozen lightning at the given age
 //   ?dt=0.05 forces a fixed update dt (stability test)
+//   ?still   deterministic: warm up, then freeze (no rAF loop); drive it with window.__render() / window.__measure()
+//   ?seed=N  seeded Math.random (identical cape texture folds between runs, for before/after screenshots)
 import * as THREE from 'three';
 import { Effects, SpeedLines } from '../src/fx/effects.js';
 import { PlayerModel, drawEmblem } from '../src/player/model.js';
@@ -30,6 +32,16 @@ const info = document.getElementById('info');
 const [mode, arg] = (location.hash || '#all').slice(1).split('-');
 const params = new URLSearchParams(location.search);
 const forcedDt = parseFloat(params.get('dt')) || 0;
+const still = params.has('still');
+if (params.has('seed')) {
+  const seed0 = (parseInt(params.get('seed'), 10) || 1) >>> 0;
+  let sd = seed0;
+  // restart the sequence at every 2D canvas: procedural textures (cape folds) then do not depend on how many
+  // three.js objects (each takes a random UUID) were created before them
+  const gc = HTMLCanvasElement.prototype.getContext;
+  HTMLCanvasElement.prototype.getContext = function (type, ...a) { if (type === '2d') sd = seed0; return gc.call(this, type, ...a); };
+  Math.random = () => { sd = (sd + 0x6D2B79F5) >>> 0; let x = sd; x = Math.imul(x ^ (x >>> 15), x | 1); x ^= x + Math.imul(x ^ (x >>> 7), x | 61); return ((x ^ (x >>> 14)) >>> 0) / 4294967296; };
+}
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(1);
@@ -45,7 +57,7 @@ scene.fog = new THREE.Fog(0xbfdff2, 120, 1200);
 const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 3000);
 camera.position.set(0, 3, 10);
 scene.add(camera);
-camera.fov = 50; camera.updateProjectionMatrix();
+camera.fov = parseFloat(params.get('fov')) || 50; camera.updateProjectionMatrix();     // ?fov=20 zooms in on the model
 
 scene.add(new THREE.HemisphereLight(0xcfe6ff, 0x6d7b52, 1.05));
 const sun = new THREE.DirectionalLight(0xfff1d6, 2.4);
@@ -261,7 +273,34 @@ if (mode !== 'emblem' && mode !== 'stress') {
     const warm = Math.round(3 * 60);
     for (let i = 0; i < warm; i++) simStep(1 / 60);
   }
+  // draw-call probe: colour pass (shadows off) and full frame (with the shadow pass), with and without the model(s)
+  window.__render = () => { renderer.render(scene, camera); return renderer.info.render.calls; };
+  window.__measure = () => {
+    const models = model ? [model] : gallery.map((g) => g.m);
+    const r = (shadows, vis) => {
+      for (const m of models) m.root.visible = vis;
+      renderer.shadowMap.enabled = shadows; renderer.shadowMap.needsUpdate = true;
+      renderer.info.autoReset = false; renderer.info.reset();      // r180 resets info AFTER the shadow pass: count it too
+      renderer.render(scene, camera);
+      renderer.info.autoReset = true;
+      return { calls: renderer.info.render.calls, tris: renderer.info.render.triangles };
+    };
+    const cw = r(false, true), cn = r(false, false), fw = r(true, true), fn = r(true, false);
+    for (const m of models) m.root.visible = true;
+    renderer.shadowMap.enabled = true;
+    const out = { models: models.length, colourPerModel: (cw.calls - cn.calls) / models.length, shadowPerModel: (fw.calls - fn.calls - (cw.calls - cn.calls)) / models.length,
+      trisPerModel: (cw.tris - cn.tris) / models.length, colourCalls: cw.calls, frameCalls: fw.calls };
+    if (model) {
+      const f = (v) => v.toArray().map((x) => +x.toFixed(5));
+      const a = V(), b = V();
+      out.hook0 = f(model.hookOrigin(0, a)); out.hook1 = f(model.hookOrigin(1, a));
+      model.gasNozzle(a, b); out.gasPos = f(a); out.gasDir = f(b);
+      let n = 0; model.root.traverse(() => n++); out.objects = n;
+    }
+    return out;
+  };
   window.__ready = true;
+  if (still) { renderer.render(scene, camera); } else {
   let frames = 0;
   const loop = () => {
     const now = performance.now();
@@ -278,6 +317,7 @@ if (mode !== 'emblem' && mode !== 'stress') {
     requestAnimationFrame(loop);
   };
   loop();
+  }
 }
 addEventListener('resize', () => { renderer.setSize(innerWidth, innerHeight); camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); });
 </script>

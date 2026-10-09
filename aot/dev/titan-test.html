@@ -5,16 +5,21 @@
 </head><body><div id="i"></div>
 <script type="module">
 // Dev harness for the titan module: ground, lights, a line-up of titans, the colossal and a fake player.
-//   #lineup  #closeup  #colossal  #chase  #grab  #swat   (camera presets; ?t=seconds to fast-forward)
+//   #lineup  #closeup  #colossal  #chase  #grab  #swat  #leap   (camera presets; ?t=seconds to fast-forward)
+//   ?norender: no WebGL, no rAF loop; drive it with window.stepTitans(dt, n) (headless checks)
 import * as THREE from 'three';
 import { TitanManager } from '../src/titans/titans.js';
 
 const V = THREE.Vector3;
 const hash = (location.hash.slice(1) || 'lineup');
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setSize(innerWidth, innerHeight); renderer.setPixelRatio(1);
-renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-document.body.appendChild(renderer.domElement);
+const NORENDER = new URLSearchParams(location.search).has('norender');
+let renderer = null;
+if (!NORENDER) {
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(innerWidth, innerHeight); renderer.setPixelRatio(1);
+  renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  document.body.appendChild(renderer.domElement);
+}
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x9fc8ee); scene.fog = new THREE.Fog(0x9fc8ee, 300, 1600);
 scene.add(new THREE.HemisphereLight(0xdcecff, 0x6a5a45, 1.5));
@@ -34,9 +39,12 @@ catch (e) { console.warn('stub collision', e.message); collision = { groundHeigh
 const game = { scene, camera, renderer, collision, time: 0, mode: 'free' };
 const listeners = {};
 game.events = { on: (n, f) => (listeners[n] ||= []).push(f), off() {}, emit: (n, p) => (listeners[n] || []).forEach((f) => f(p)) };
-let steps = 0, kills = 0;
-game.events.on('titan:step', () => steps++); game.events.on('titan:killed', () => kills++);
-try { const m = await import('../src/fx/effects.js'); game.fx = new m.Effects(game); } catch (e) { console.warn('no fx', e.message); }
+let steps = 0, kills = 0, bigSteps = 0, impacts = 0;
+const windups = [];
+game.events.on('titan:step', (e) => { steps++; if (e.size >= 2 * e.titan.height - 1e-6) bigSteps++; }); game.events.on('titan:killed', () => kills++);
+game.events.on('titan:windup', (e) => windups.push({ t: +game.time.toFixed(3), kind: e.kind, duration: +e.duration.toFixed(3), id: e.titan.id }));
+if (!NORENDER) { try { const m = await import('../src/fx/effects.js'); game.fx = new m.Effects(game); } catch (e) { console.warn('no fx', e.message); } }
+else game.fx = { impact() { impacts++; }, steam() {}, blood() {}, lightning() {}, update() {} };
 game.audio = { titanStep() {}, titanGroan() {}, titanFall() {}, colossalAppear() {}, napeKill() {}, steamHiss() {} };
 
 // --- a fake player
@@ -52,7 +60,7 @@ scene.add(marker);
 
 game.titans = new TitanManager(game);
 const T = game.titans;
-const spawn = (kind, h, x, z, yaw = Math.PI) => T.spawn({ kind, height: h, position: new V(x, 0, z), yaw });
+const spawn = (kind, h, x, z, yaw = Math.PI, crawler) => T.spawn({ kind, height: h, position: new V(x, 0, z), yaw, crawler });
 
 let mode = 'orbit', camFn = null, frozen = false;
 if (hash === 'lineup') {
@@ -84,11 +92,17 @@ if (hash === 'lineup') {
   } else {
     spawn('normal', 7, -14, 40, 0).idleDur = 0;
     spawn('normal', 10, 8, 55, 0).idleDur = 0.5;
-    spawn('abnormal', 6, 26, 70, 0).idleDur = 0.2;
+    spawn('abnormal', 6, 26, 70, 0, true).idleDur = 0.2;   // a crawler
     spawn('normal', 4, -26, 62, 0);
     player.position.set(0, 1.7, 5);
     camFn = () => { camera.position.set(-34, 12, -12); camera.lookAt(0, 4, 38); };
   }
+}
+if (hash === 'leap') {
+  // a crawling abnormal pounces at a player standing in the open (leaps are >= 8 s apart)
+  const t = spawn('abnormal', 7, 0, 46, Math.PI, true); t.idleDur = 0; t.cdLeap = 0.6; window.leaper = t;
+  player.position.set(0, 1.7, 8);
+  camFn = () => { camera.position.set(34, 9, 26); camera.lookAt(0, 3.5, 24); };
 }
 if (hash === 'kill' || hash === 'blind' || hash === 'cripple') {
   const t = spawn('normal', 8, 0, 0, 0.0); player.alive = false; t.state = 'idle'; t.aiEnabled = false; t.gazeTarget = camera.position;
@@ -105,12 +119,14 @@ function movePlayer(dt) {
   if (player.freeze > 0) { player.freeze -= dt; player.position.set(0, 1.7, 5); return; }
   if (hash === 'chase') { const a = ptime * 0.25; player.position.set(Math.sin(a) * 28, 1.7 + 6 * Math.max(0, Math.sin(ptime * 0.9)), 20 + Math.cos(a) * 18); }
   else if (hash === 'swat') { const a = ptime * 1.1; player.position.set(Math.sin(a) * 14, 5 + 3 * Math.sin(a * 2), 30 + Math.cos(a) * 14); player.velocity.set(Math.cos(a) * 15, 0, -Math.sin(a) * 15); }
-  else if (hash === 'grab') { player.position.set(0, 1.7, 17); }
+  else if (hash === 'grab' || hash === 'leap') { if (!player.pinned) player.position.set(hash === 'grab' ? 0 : 0, 1.7, hash === 'grab' ? 17 : 8); }
   player.velocity.multiplyScalar(0.9);
 }
 
 let last = performance.now(), fixed = reuseTime ? parseFloat(reuseTime) : 0;
 const info = document.getElementById('i');
+const infoText = () => `titans ${T.titans.length}  steps ${steps}  kills ${kills}  eaten ${player.eatenCount}  state ${T.titans.map((t) => t.state + (t.crawler ? '(c)' : '')).join(',')}` +
+  `\nthreat ${T.titans.map((t) => t.threat.toFixed(2)).join(',')}  speed ${T.titans.map((t) => t.velocity.length().toFixed(1)).join(',')}` + (renderer ? `  calls ${renderer.info.render.calls}` : '');
 function frame(now) {
   let dt = Math.min(0.05, (now - last) / 1000); last = now;
   if (fixed > 0) { let n = 0; while (fixed > 0 && n++ < 400) { step(1 / 30); fixed -= 1 / 30; } }
@@ -119,9 +135,14 @@ function frame(now) {
   marker.position.copy(player.position); marker.visible = player.alive;
   sun.target.position.set(camera.position.x * 0.2, 0, 0);
   renderer.render(scene, camera);
-  info.textContent = `titans ${T.titans.length}  steps ${steps}  kills ${kills}  eaten ${player.eatenCount}  state ${T.titans.map((t) => t.state).join(',')}  calls ${renderer.info.render.calls}`;
-  requestAnimationFrame(frame);
+  info.textContent = infoText();
+  if (!window.manualFrames) requestAnimationFrame(frame);
 }
+// headless hooks: step the simulation, render one frame on demand, read counters
+window.stepTitans = (dt = 1 / 60, n = 1) => { for (let i = 0; i < n; i++) step(dt); info.textContent = infoText(); };
+window.renderOnce = () => { if (!renderer) return 0; if (camFn) camFn(); marker.position.copy(player.position); renderer.info.reset(); renderer.render(scene, camera); info.textContent = infoText(); return renderer.info.render.calls; };
+window.counters = () => ({ steps, bigSteps, kills, impacts, eaten: player.eatenCount, hits: player.hits, impulses: player.impulses.slice(), windups: windups.slice() });
+window.player = player;
 let acted = false;
 function step(dt) {
   game.time += dt;
@@ -142,6 +163,9 @@ function step(dt) {
   collision.updateDynamic();
   game.fx?.update?.(dt);
 }
-window.game = game; window.T = T;
-requestAnimationFrame(frame);
+window.game = game; window.T = T; window.THREE = THREE;
+window.manualFrames = NORENDER || new URLSearchParams(location.search).has('manual');
+if (!window.manualFrames) requestAnimationFrame(frame);
+else if (renderer) { renderer.info.autoReset = false; }
+window.ready = true;
 </script></body></html>

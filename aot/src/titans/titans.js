@@ -1,23 +1,26 @@
 // TitanManager: owns every Titan, spawns / updates / removes them and answers blade hit tests.
 // See aot/ARCHITECTURE.md ("Titans"). Model: builder.js + rig.js, behaviour: titan.js.
 import * as THREE from 'three';
-import { Titan } from './titan.js';
+import { Titan, TITAN_TUNING } from './titan.js';
 
-export { Titan };
+export { Titan, TITAN_TUNING };
 
 export class TitanManager {
   constructor(game) {
     this.game = game;
     this.titans = [];
+    /** s left during which no titan may grab (set when the player gets free of a hand) */
+    this.grabBlockT = 0;
+    this._grabbedPrev = null;
     this.group = new THREE.Group();
     this.group.name = 'titans';
     game.scene?.add(this.group);
   }
 
-  /** spawn({ kind: 'normal'|'abnormal'|'colossal', height?, position: Vector3, yaw? }) -> Titan */
-  spawn({ kind = 'normal', height, position, yaw } = {}) {
+  /** spawn({ kind: 'normal'|'abnormal'|'colossal', height?, position: Vector3, yaw?, crawler?: bool (abnormals) }) -> Titan */
+  spawn({ kind = 'normal', height, position, yaw, crawler } = {}) {
     if (height === undefined) height = kind === 'colossal' ? 60 : kind === 'abnormal' ? 7 : 3 + Math.random() * 9;
-    const t = new Titan(this, { kind, height, position: position || new THREE.Vector3(), yaw });
+    const t = new Titan(this, { kind, height, position: position || new THREE.Vector3(), yaw, crawler });
     this.titans.push(t);
     this.group.add(t.root);
     if (kind === 'colossal') this._colossalAppear(t);
@@ -35,6 +38,11 @@ export class TitanManager {
   }
 
   update(dt) {
+    // the player just got out of a hand (cut free, or the titan let go): give them a moment before the next grab
+    const pl = this.game.player, held = (pl && pl.grabbedBy) || null;
+    if (this._grabbedPrev && !held && pl?.alive) this.grabBlockT = Math.max(this.grabBlockT, TITAN_TUNING.GRAB_BLOCK_AFTER_ESCAPE);
+    this._grabbedPrev = held;
+    if (this.grabBlockT > 0) this.grabBlockT = Math.max(0, this.grabBlockT - dt);
     const list = this.titans;
     for (let i = 0; i < list.length; i++) list[i].update(dt);
     for (let i = list.length - 1; i >= 0; i--) if (list[i].dead) list.splice(i, 1);
@@ -43,6 +51,7 @@ export class TitanManager {
   clear() {
     for (const t of this.titans) t.dispose();
     this.titans.length = 0;
+    this.grabBlockT = 0; this._grabbedPrev = null;
   }
 
   remove(t) {
