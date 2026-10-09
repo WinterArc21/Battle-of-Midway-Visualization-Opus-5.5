@@ -57,7 +57,7 @@ function fallbackWorld() {
   let s = 7;
   const rnd = () => ((s = (s * 16807) % 2147483647) / 2147483647);
   for (let i = 0; i < 90; i++) {
-    const x = (rnd() - 0.5) * 700, z = 200 + rnd() * 600, r = 2.5 + rnd() * 2, h = 70 + rnd() * 40;
+    const x = (rnd() - 0.5) * 300, z = 60 + rnd() * 600, r = 2.5 + rnd() * 2, h = 70 + rnd() * 40;
     const m = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.8, r, h, 12), trunkM);
     m.position.set(x, h / 2, z); m.castShadow = true; scene.add(m);
     game.collision.addCylinder({ x, z, y0: 0, y1: h, radius: r, material: 'bark' });
@@ -87,7 +87,7 @@ const boot = async () => {
   say('Waking the Titans…');
   game.fx = await load('./fx/effects.js', (m) => new m.Effects(game));
   game.speedLines = await load('./fx/effects.js', (m) => (m.SpeedLines ? new m.SpeedLines(renderer) : null));
-  game.audio = await load('./audio/audio.js', (m) => new m.Audio());
+  game.audio = params.has('noaudio') ? null : await load('./audio/audio.js', (m) => new m.Audio());
   game.hud = await load('./ui/hud.js', (m) => new m.Hud(game));
   game.titans = params.has('notitans') ? null : await load('./titans/titans.js', (m) => new m.TitanManager(game));
 

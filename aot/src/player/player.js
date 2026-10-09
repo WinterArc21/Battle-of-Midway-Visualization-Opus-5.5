@@ -274,6 +274,8 @@ export class Player {
       odm.constrain(p, v);
       if (this._contacts(p, v, dt)) groundedStep = true;
     }
+    if (groundedStep && this.airTime > 0.35) this._landT = Math.min(1, (this._preLandSpeed || 0) / 30) + 0.001;
+    this._preLandSpeed = v.length();
     if (groundedStep) { this.grounded = true; this.groundTime = 0; }
     else { this.groundTime += dt; if (this.groundTime > CFG.ground.coyote) this.grounded = false; }
     if (this.grounded) this.airTime = 0; else this.airTime += dt;
@@ -432,8 +434,10 @@ export class Player {
     if (this.grounded && !anchored) {
       tf.set(v.x, 0, v.z);
       if (tf.lengthSq() < 0.5) tf.set(Math.sin(this.yaw), 0, Math.cos(this.yaw));
-    } else if (speed > 2.5) tf.copy(v);
-    else tf.set(Math.sin(this.yaw), 0, Math.cos(this.yaw));
+    } else if (speed > 2.5) {
+      // fly along the velocity, but never a pure vertical dive: keep a heading so the pose stays readable
+      tf.copy(v).multiplyScalar(1 / speed).addScaledVector(_e.set(Math.sin(this.yaw), 0, Math.cos(this.yaw)), anchored ? 0.25 : 0.55);
+    } else tf.set(Math.sin(this.yaw), 0, Math.cos(this.yaw));
     tf.normalize();
     this.forward.lerp(tf, damp(this.grounded ? 14 : 7, dt)).normalize();
     const upT = _b.copy(UP);
@@ -441,7 +445,7 @@ export class Player {
     if (pd && !this.grounded) upT.lerp(pd, 0.55);
     if (this.wallN && this.wallTime > 0 && anchored) upT.copy(this.wallN);
     upT.addScaledVector(this.forward, -upT.dot(this.forward));
-    if (upT.lengthSq() < 1e-4) upT.copy(UP);
+    if (upT.lengthSq() < 1e-3) upT.set(-Math.sin(this.yaw), 0, -Math.cos(this.yaw)).addScaledVector(this.forward, -0.0);
     upT.normalize();
     this.bodyUp.lerp(upT, damp(6, dt)).normalize();
     this.wallTime -= dt;
@@ -460,6 +464,15 @@ export class Player {
       if (this.model.root) this.model.root.visible = this.alive || !!this.grabbedBy;
     }
 
+    // landing dust
+    if (this._landT > 0) {
+      const s = this._landT; this._landT = 0;
+      game.audio?.land?.(s);
+      game.fx?.impact?.(_c.copy(this.render).addScaledVector(this.groundN, -CFG.radius), this.groundN, 'ground');
+      if (s > 0.4) this.cam.trauma = Math.min(1, this.cam.trauma + s * 0.3);
+    }
+    // gas brake vents fire forward
+    if (this.odm.braking > 0 && game.fx?.gas) game.fx.gas(_c.copy(this.render).addScaledVector(this.forward, 0.35), this.forward, 0.6);
     // gas puffs
     if ((this.boosting || this._dashPuff > 0) && game.fx?.gas) {
       const np = _c, nd = _d;
@@ -515,6 +528,16 @@ export class Player {
     const look = this._camBasis();
     const dir = this.speed > 6 ? _b.copy(this.vel).normalize().lerp(look, 0.35).normalize() : _b.copy(look);
     const center = _c.copy(this.render).addScaledVector(dir, spin ? 0.6 : 1.3);
+    // the blades find the nape: if one is within reach, strike it (anime precision at full speed)
+    let bestNape = null, bestD = radius + 2.2;
+    for (const t of titans.titans || []) {
+      if (!t.alive || !t.napeWorld) continue;
+      const nw = t.napeWorld();
+      if (!nw?.center) continue;
+      const d = nw.center.distanceTo(this.render);
+      if (d < bestD) { bestD = d; bestNape = nw.center; }
+    }
+    if (bestNape) center.copy(bestNape);
     const hits = titans.hitTest(center, radius);
     if (!hits || !hits.length) return;
     // best part: nape > eye > ankle > others
@@ -577,7 +600,7 @@ export class Player {
     let rollT = 0;
     if (this.odm.attachedCount() && !this.grounded) {
       const pd = this.odm.pullDir(this.render, _e);
-      if (pd) rollT = THREE.MathUtils.clamp(pd.dot(right) * Math.min(speed, 70) * 0.006, -0.32, 0.32);
+      if (pd) rollT = THREE.MathUtils.clamp(pd.dot(right) * Math.min(speed, 70) * 0.0035, -0.17, 0.17);
     }
     c.roll += (rollT - c.roll) * damp(3, dt);
     cam.rotateZ(-c.roll + shx * 0.02);
