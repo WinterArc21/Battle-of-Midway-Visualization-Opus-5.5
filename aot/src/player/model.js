@@ -853,6 +853,9 @@ export class PlayerModel {
     let theta = lerp(thetaG, thetaAir, this.wAir);
     theta = lerp(theta, Math.PI / 2 + 0.0, this.wSpin * this.wAir);   // spin: axis = body axis, body horizontal-ish
     theta = lerp(theta, 0.05, this.wGrab);
+    // about to touch down: the body comes upright (feet first), whatever the dive angle
+    this.wLand = (this.wLand || 0) + (clamp(finite(s.landPrep), 0, 1) - (this.wLand || 0)) * (first ? 1 : k(16));
+    theta = lerp(theta, 0.12, this.wLand * this.wAir);
     if (first) this.theta = theta; else this.theta += (theta - this.theta) * k(8.5);
     let roll = -0.55 * leftness * this.wHook + clamp(-this.yawRate * 0.09, -0.5, 0.5) * airFlight + 0.05 * Math.sin(t * 1.7) * this.wAir;
     roll *= 1 - this.wSpin;
@@ -939,8 +942,18 @@ export class PlayerModel {
       }
       TR[BOB] = 0.03 * Math.sin(t * 17);
     }
-    // base mixes
-    for (let i = 0; i < NCH; i++) TC[i] = lerp(TG[i], TA[i], this.wAir);
+    // base mixes (about to touch down: the air pose gives way to a braced, feet-first stance)
+    const wAirPose = this.wAir * (1 - 0.85 * this.wLand);
+    for (let i = 0; i < NCH; i++) TC[i] = lerp(TG[i], TA[i], wAirPose);
+    if (this.wLand > 0.01) {
+      const L2 = this.wLand * this.wAir;
+      TC[SPX] += 0.18 * L2; TC[BOB] += 0;
+      for (let sd = 0; sd < 2; sd++) {
+        const o = sd * 4, oa = sd * 5;
+        TC[LHX + o] -= 0.45 * L2; TC[LKX + o] += 0.75 * L2; TC[LAX + o] -= 0.25 * L2;
+        TC[LSZ + oa] += 0.55 * L2; TC[LSX + oa] -= 0.2 * L2;
+      }
+    }
     // crouch: the knees take a landing (or load a jump); hips back, chest forward, pelvis drops, feet stay planted
     const cr = this.wCrouch * (1 - this.wAir);
     if (cr > 0.001) {

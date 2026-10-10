@@ -380,6 +380,7 @@ export class Titan {
     if (this.isColossal) this._thinkColossal(dt); else this._think(dt);
     if (!this.isColossal) this._locomote(dt);
     this._groundSnap();
+    this.root.rotation.y = this.yaw;   // the body faces where it walks (it was left at the spawn heading)
     this._buildPose(dt);
     this._applyPose(dt);
     this.root.updateMatrixWorld(true);

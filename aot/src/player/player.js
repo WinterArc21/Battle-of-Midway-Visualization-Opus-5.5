@@ -799,17 +799,32 @@ export class Player {
       tf.copy(v).multiplyScalar(1 / speed).addScaledVector(_e.set(Math.sin(this.yaw), 0, Math.cos(this.yaw)), anchored ? 0.25 : 0.55);
     } else tf.set(Math.sin(this.yaw), 0, Math.cos(this.yaw));
     if (this.riding) tf.set(Math.sin(this.riding.yaw), 0, Math.cos(this.riding.yaw));
+    // coming in to land: swing upright and feet-first before touchdown (never a head-first dive into the ground)
+    this.landPrep = 0;
+    if (!this.grounded && !anchored && v.y < -2) {
+      const below = this.game.collision.raycast(this.render, _e.set(0, -1, 0), 40, { dynamic: false });
+      if (below && below.normal.y > 0.5) {
+        const tti = (below.distance - CFG.radius) / -v.y;           // seconds until touchdown
+        this.landPrep = THREE.MathUtils.clamp(1 - (tti - 0.15) / 0.55, 0, 1);
+      }
+    }
+    if (this.landPrep > 0) {
+      const hx = v.x, hz = v.z, hl = Math.hypot(hx, hz);
+      _e.set(hl > 0.5 ? hx / hl : Math.sin(this.yaw), 0, hl > 0.5 ? hz / hl : Math.cos(this.yaw));
+      tf.normalize().lerp(_e, this.landPrep);
+    }
     tf.normalize();
-    this.forward.lerp(tf, damp(this.riding ? 30 : this.grounded ? 14 : 7, dt)).normalize();
+    this.forward.lerp(tf, damp(this.riding ? 30 : this.grounded ? 14 : this.landPrep > 0 ? 12 : 7, dt)).normalize();
     const upT = _b.copy(UP);
     const pd = this.odm.pullDir(this.render, _c);
     if (pd && !this.grounded) upT.lerp(pd, 0.55);
     if (this.wallN && this.wallTime > 0 && anchored) upT.copy(this.wallN);
     if (this.riding) this.riding.up(upT);
+    if (this.landPrep > 0) upT.lerp(UP, this.landPrep);
     upT.addScaledVector(this.forward, -upT.dot(this.forward));
     if (upT.lengthSq() < 1e-3) upT.set(-Math.sin(this.yaw), 0, -Math.cos(this.yaw)).addScaledVector(this.forward, -0.0);
     upT.normalize();
-    this.bodyUp.lerp(upT, damp(this.riding ? 20 : 6, dt)).normalize();
+    this.bodyUp.lerp(upT, damp(this.riding ? 20 : this.landPrep > 0 ? 14 : 6, dt)).normalize();
     this.wallTime -= dt;
 
     if (this.model) {
@@ -828,7 +843,7 @@ export class Player {
         mu = this._flipU.copy(this.bodyUp).applyQuaternion(ax);
       }
       this.model.update(dt, {
-        riding: this.riding ? 1 - this.rideStand : 0, crouch: this.grounded ? this.crouch : 0,
+        riding: this.riding ? 1 - this.rideStand : 0, crouch: this.grounded ? this.crouch : 0, landPrep: this.landPrep,
         horseGallop: this.riding?.gallop || 0, horsePhase: this.riding?.phase || 0,
         position: this._modelPos.copy(this.render).addScaledVector(this.bodyUp, CFG.modelLift), velocity: v, forward: mf, up: mu,
         grounded: this.grounded, running: run, hooks, boosting: this.boostLevel, slash,

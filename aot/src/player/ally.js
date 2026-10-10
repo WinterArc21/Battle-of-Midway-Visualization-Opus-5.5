@@ -157,15 +157,21 @@ export class Ally {
   update(dt, alpha) {
     this.render.lerpVectors(this.prev, this.pos, alpha);
     const sp = this.vel.length();
+    const gy = this.game.collision.groundHeight(this.render.x, this.render.z);
+    const landing = !this.horse && this.vel.y < -2 && !this.odm.attachedCount() && (this.render.y - gy) / -this.vel.y < 0.7;
     if (this.horse) {
       this.forward.set(Math.sin(this.horse.yaw), 0, Math.cos(this.horse.yaw));
       this.horse.up(this.up);
+    } else if (landing) {
+      const hl = Math.hypot(this.vel.x, this.vel.z) || 1;
+      this.forward.lerp(_a.set(this.vel.x / hl, 0, this.vel.z / hl), 1 - Math.exp(-12 * dt)).normalize();
+      this.up.lerp(UP, 1 - Math.exp(-14 * dt)).normalize();
     } else if (sp > 2) this.forward.lerp(_a.copy(this.vel).multiplyScalar(1 / sp).addScaledVector(this.heading, 0.4).normalize(), 1 - Math.exp(-6 * dt)).normalize();
     const pd = this.odm.pullDir(this.render, _b);
     const upT = _c.copy(UP);
     if (pd) upT.lerp(pd, 0.5);
     upT.addScaledVector(this.forward, -upT.dot(this.forward));
-    if (!this.horse && upT.lengthSq() > 1e-3) this.up.lerp(upT.normalize(), 1 - Math.exp(-5 * dt)).normalize();
+    if (!this.horse && !landing && upT.lengthSq() > 1e-3) this.up.lerp(upT.normalize(), 1 - Math.exp(-5 * dt)).normalize();
     const dist = this.render.distanceTo(this.game.camera.position);
     const visible = dist < 260;
     const wantOutlines = dist < 45;
@@ -173,7 +179,7 @@ export class Ally {
     if (this.model) {
       this.model.root.visible = visible;
       if (visible) this.model.update(dt, {
-        riding: this.horse ? 1 : 0, horseGallop: this.horse?.gallop || 0, horsePhase: this.horse?.phase || 0,
+        landPrep: landing ? 1 : 0, riding: this.horse ? 1 : 0, horseGallop: this.horse?.gallop || 0, horsePhase: this.horse?.phase || 0,
         position: this._mp.copy(this.render).addScaledVector(this.up, 0.4), velocity: this.vel, forward: this.forward, up: this.up, grounded: !!this.horse, running: 0,
         hooks: this.odm.hooks.map((h) => ({ attached: h.attached, anchor: h.attached ? h.anchor : null, state: h.state })),
         boosting: this.boost > 0 ? 1 : 0, slash: -1, spin: false, grabbed: false, blades: !this.horse, speed: sp, alive: true,
