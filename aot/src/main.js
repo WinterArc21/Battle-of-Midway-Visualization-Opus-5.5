@@ -40,6 +40,14 @@ const game = {
 game.noRender = params.has('norender');
 window.game = game; // handy for debugging and the headless test bench
 game.input = new Input(renderer.domElement);
+{
+  const fl = document.createElement('div');
+  fl.style.cssText = 'position:fixed;inset:0;background:#fff;opacity:0;pointer-events:none;z-index:3;mix-blend-mode:screen';
+  document.body.appendChild(fl);
+  let a = 0, raf = 0;
+  const fade = () => { a *= 0.82; fl.style.opacity = a.toFixed(3); if (a > 0.01) raf = requestAnimationFrame(fade); else { fl.style.opacity = '0'; raf = 0; } };
+  game.flash = (k = 0.5) => { a = Math.max(a, k); fl.style.opacity = a.toFixed(3); if (!raf) raf = requestAnimationFrame(fade); };
+}
 
 async function load(imp, fn) {
   try { const m = await imp(); return await fn(m); }
@@ -181,7 +189,8 @@ function step(dt) {
   // kill moment: a freeze-frame, then a short slow-motion that eases back to full speed
   let simDt = dt;
   if (game.hitstop > 0) { game.hitstop -= dt; simDt = dt * 0.1; }
-  else if (game.slowmo > 0) { game.slowmo -= dt; simDt = dt * (0.3 + 0.7 * (1 - Math.max(0, game.slowmo) / 0.4)); }
+  else if (game.slowmo > 0) { game.slowmo -= dt; const d = game.slowmoDur || 0.4; simDt = dt * (0.22 + 0.78 * Math.pow(1 - Math.max(0, game.slowmo) / d, 2)); }
+  if (game.killCam) { game.killCam.t += dt; if (game.killCam.t >= game.killCam.dur) game.killCam = null; }
   game.time += simDt;
 
   const playing = game.mode === 'expedition' || game.mode === 'free' || game.mode === 'training';
@@ -271,7 +280,7 @@ function hudState(playing) {
       const h = p.odm.hooks[i], T = p.targets[i], o = _hookTargets[i];
       o.attached = h.attached;
       o.valid = h.attached || T.valid;
-      o.visible = o.valid && toScreen(h.attached ? h.anchor : T.point, o);
+      o.visible = !game.killCam && o.valid && toScreen(h.attached ? h.anchor : T.point, o);
     }
   }
   return {
@@ -283,8 +292,8 @@ function hudState(playing) {
     napeMarkers: _markers, hookTargets: _hookTargets, threats: _threats,
     objective: playing ? game.flow.objective() : '', fps: game.fps,
     grabbed: !!p.grabbedBy, struggle: p.struggle, swapping: p.swapT > 0, wave: game.flow.wave,
-    timer: game.flow.timer(), targets: game.flow.trainingTargets(), hint: playing ? game.flow.hint : null,
-    controlsCard: playing && game.showControls,
+    timer: game.flow.timer(), targets: game.flow.trainingTargets(), hint: playing && !game.killCam ? game.flow.hint : null,
+    controlsCard: playing && game.showControls && !game.killCam,
   };
 }
 

@@ -934,9 +934,35 @@ export class Player {
       this.stats.damage += damage;
       if (this.blade <= 0) { this.game.audio?.bladeBreak?.(); this.game.events.emit('player:bladeBroken', {}); }
       this.cam.trauma = Math.min(1, this.cam.trauma + (res.killed ? 0.5 : 0.2));
-      if (res.killed) { this.game.hitstop = 0.06; this.game.slowmo = 0.4; }
+      if (res.killed) this._killMoment(hit, dir);
     }
     return true;
+  }
+
+  /** The nape cut: freeze-frame, slow motion, a side-on kill cam, a flash, a crescent of steel, blood and steam. */
+  _killMoment(hit, dir) {
+    const g = this.game;
+    g.hitstop = 0.09;
+    g.slowmo = CFG.kill.slowmo; g.slowmoDur = CFG.kill.slowmo;
+    g.flash?.(0.55);
+    const nape = hit.point.clone();
+    g.fx?.blood?.(nape, dir, 3);
+    g.fx?.steam?.(nape, Math.max(2, (hit.titan.height || 8) * 0.3), 2.5);
+    if (g.fx?.slashArc) {
+      _q.copy(g.camera.quaternion).multiply(_q2.setFromAxisAngle(_a.set(0, 0, 1), -0.5));
+      g.fx.slashArc(nape, _q, 3.5);
+    }
+    this.cam.trauma = Math.min(1, this.cam.trauma + 0.6);
+    if (hit.titan.kind !== 'dummy' && (g.time - (this._lastKillCam ?? -99)) > CFG.kill.camCooldown) {
+      this._lastKillCam = g.time;
+      // frame the cut from the side the soldier is passing on
+      const toN = _e.subVectors(nape, this.render).setY(0);
+      if (toN.lengthSq() < 1e-4) toN.set(Math.sin(this.yaw), 0, Math.cos(this.yaw));
+      toN.normalize();
+      const side = _b.crossVectors(UP, toN).normalize().multiplyScalar(this.vel.dot(_b) >= 0 ? 1 : -1);
+      g.killCam = { t: 0, dur: CFG.kill.camTime, nape, side: side.clone(), toN: toN.clone(), size: hit.titan.height || 8 };
+    }
+    g.hud?.message?.(hit.titan.kind === 'dummy' ? 'CUT!' : 'NAPE CUT', 1.1, 'big');
   }
 
   _camera(dt) {
@@ -1002,6 +1028,23 @@ export class Player {
     const fovT = CFG.cam.fov + (CFG.cam.fovMax - CFG.cam.fov) * THREE.MathUtils.smoothstep(speed, 12, 85);
     c.fov += (fovT - c.fov) * damp(4, dt);
     if (Math.abs(cam.fov - c.fov) > 0.01) { cam.fov = c.fov; cam.updateProjectionMatrix(); }
+    // kill cam: side-on, framing the soldier and the nape, eased in and out (driven by real time in main)
+    const kc = this.game.killCam;
+    if (kc) {
+      const w = Math.min(1, kc.t / 0.12) * Math.min(1, (kc.dur - kc.t) / 0.3);
+      if (w > 0) {
+        const R = 6 + kc.size * 0.45;
+        const mid = _a.copy(this.render).lerp(kc.nape, 0.55);
+        const kp = _b.copy(mid).addScaledVector(kc.side, R).addScaledVector(kc.toN, -R * 0.35).addScaledVector(UP, 1.5 + kc.size * 0.08);
+        // drift slowly round the cut while time crawls
+        kp.addScaledVector(kc.toN, kc.t * 2.5);
+        _q.copy(cam.quaternion);
+        cam.position.lerp(kp, w);
+        cam.lookAt(mid);
+        _q2.copy(cam.quaternion);
+        cam.quaternion.copy(_q).slerp(_q2, w);
+      }
+    }
   }
 
   _audio() {
