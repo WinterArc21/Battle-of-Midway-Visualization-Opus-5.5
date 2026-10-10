@@ -33,6 +33,7 @@ export class Player {
     this._modelPos = new THREE.Vector3();
     this._released = [0, 1].map(() => ({ p: new THREE.Vector3(), t: 0 }));
     this._bans = [];
+    this._flipF = new THREE.Vector3(); this._flipU = new THREE.Vector3(); this.flipT = 0; this._lastAnchorY = 0;
     this.reset(new THREE.Vector3(0, 50.6, 0), 0);
   }
 
@@ -49,7 +50,7 @@ export class Player {
     this.stun = 0; this.grabbedBy = null; this.grabHand = null; this.struggle = 0; this.grabImmune = 0;
     this.reelLevel = 0; this.impactCooldown = 0;
     this.wishF = 0; this.wishR = 0; this.turn = 0; this.wantBoost = false; this._dashPuff = 0;
-    this.shiftHeld = 0; this.payout = false; this.mouseT = 99; this.autoSwapT = 0; this.primeT = 0; this.mountCd = 0; this.rideStand = 0; this.rideStandT = 0; this.crouch = 0; if (this.riding) this.riding.rider = null; this.riding = null; this.prey = null; this.preyDist = 1e9; this.swooping = false;
+    this.shiftHeld = 0; this.payout = false; this.mouseT = 99; this.autoSwapT = 0; this.primeT = 0; this.flipT = 0; this.mountCd = 0; this.rideStand = 0; this.rideStandT = 0; this.crouch = 0; if (this.riding) this.riding.rider = null; this.riding = null; this.prey = null; this.preyDist = 1e9; this.swooping = false;
     if (this.targets) for (const t of this.targets) { t.valid = false; t.collider = null; t.titan = null; }
     this.odm.reset();
     this.cam.pos.copy(position).add(new THREE.Vector3(Math.sin(yaw) * -5, 2, Math.cos(yaw) * -5));
@@ -122,6 +123,7 @@ export class Player {
       if (fireR) this._fire(1, wantL);
     }
     const wasAnchored = anchored;
+    for (const h of this.odm.hooks) if (h.attached) this._lastAnchorY = h.anchor.y;
     for (let i = 0; i < 2; i++) {
       const want = i ? wantR : wantL, h = this.odm.hooks[i];
       if (!want && h.attached) { this._released[i].p.copy(h.anchor); this._released[i].t = 1.5; }
@@ -129,8 +131,24 @@ export class Player {
     }
     if (!wantL) this.odm.release(0);
     if (!wantR) this.odm.release(1);
-    // letting go at speed flicks you up a little: the anime's release-and-fly
-    if (wasAnchored && !this.odm.attachedCount() && !this.grounded && this.speed > 20) this.vel.y += CFG.keys.releaseLift;
+    // letting go: the anime's release-and-fly. Timed at the bottom of a swing (moving level, anchor overhead)
+    // it slings you out with a burst of speed and a forward flip.
+    if (wasAnchored && !this.odm.attachedCount() && !this.grounded && this.speed > 14) {
+      const sp = this.speed, v = this.vel;
+      const level = 1 - Math.min(1, Math.abs(v.y) / (sp * 0.55));
+      const overhead = THREE.MathUtils.clamp((this._lastAnchorY - this.pos.y) / 12, 0, 1);
+      const q = level * overhead;
+      v.y += CFG.keys.releaseLift;
+      if (q > 0.35) {
+        v.addScaledVector(_e.copy(v).normalize(), CFG.release.boost * q);
+        v.y += CFG.release.lift * q;
+        this.flipT = CFG.release.flipTime;
+        this.cam.trauma = Math.min(1, this.cam.trauma + 0.12);
+        this._dashPuff = 0.2;
+        this.game.audio?.setGas?.(1);
+        if (q > 0.8) this.game.hud?.message?.('PERFECT RELEASE', 0.9, 'info');
+      }
+    }
 
     // gas: Shift. Tap on the ground = jump; clinging to a trunk = kick off; held = boost
     const shiftHit = input.hit('ShiftLeft') || input.hit('ShiftRight');
@@ -800,10 +818,19 @@ export class Player {
       const slash = this.slashT >= 0 ? this.slashT / CFG.combat.slashTime : -1;
       this.boostLevel += ((this.boosting || this._dashPuff > 0 ? 1 : 0) - this.boostLevel) * damp(18, dt);
       this.crouch = Math.max(0, this.crouch - dt * 2.6);
+      let mf = this.forward, mu = this.bodyUp;
+      if (this.flipT > 0) {
+        this.flipT -= dt;
+        const k = 1 - Math.max(0, this.flipT) / CFG.release.flipTime;
+        const ang = (k * k * (3 - 2 * k)) * Math.PI * 2;           // eased full forward somersault
+        const ax = _q2.setFromAxisAngle(_a.crossVectors(this.forward, this.bodyUp).normalize(), -ang);
+        mf = this._flipF.copy(this.forward).applyQuaternion(ax);
+        mu = this._flipU.copy(this.bodyUp).applyQuaternion(ax);
+      }
       this.model.update(dt, {
         riding: this.riding ? 1 - this.rideStand : 0, crouch: this.grounded ? this.crouch : 0,
         horseGallop: this.riding?.gallop || 0, horsePhase: this.riding?.phase || 0,
-        position: this._modelPos.copy(this.render).addScaledVector(this.bodyUp, CFG.modelLift), velocity: v, forward: this.forward, up: this.bodyUp,
+        position: this._modelPos.copy(this.render).addScaledVector(this.bodyUp, CFG.modelLift), velocity: v, forward: mf, up: mu,
         grounded: this.grounded, running: run, hooks, boosting: this.boostLevel, slash,
         spin: this.spin, grabbed: !!this.grabbedBy, blades: this.blade > 0 && this.swapT <= 0 && !(this.riding && this.rideStand < 0.5), speed,
         alive: this.alive,
