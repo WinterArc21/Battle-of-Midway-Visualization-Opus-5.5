@@ -54,7 +54,7 @@ export class Player {
     this.stun = 0; this.grabbedBy = null; this.grabHand = null; this.struggle = 0; this.grabImmune = 0;
     this.reelLevel = 0; this.impactCooldown = 0;
     this.wishF = 0; this.wishR = 0; this.turn = 0; this.wantBoost = false; this._dashPuff = 0;
-    this.shiftHeld = 0; this.payout = false; this.mouseT = 99; this.autoSwapT = 0; this.primeT = 0; this.flipT = 0; this.mountCd = 0; this.rideStand = 0; this.rideStandT = 0; this.crouch = 0; if (this.riding) this.riding.rider = null; this.riding = null; this.prey = null; this.preyDist = 1e9; this.swooping = false;
+    this.shiftHeld = 0; this.payout = false; this.mouseT = 99; this.autoSwapT = 0; this.primeT = 0; this.perch = null; this.cling = null; this.flipT = 0; this.mountCd = 0; this.rideStand = 0; this.rideStandT = 0; this.crouch = 0; if (this.riding) this.riding.rider = null; this.riding = null; this.prey = null; this.preyDist = 1e9; this.swooping = false;
     if (this.targets) for (const t of this.targets) { t.valid = false; t.collider = null; t.titan = null; }
     this.odm.reset();
     this.cam.pos.copy(position).add(new THREE.Vector3(Math.sin(yaw) * -5, 2, Math.cos(yaw) * -5));
@@ -121,7 +121,9 @@ export class Player {
     const wantR = input.held('X') || input.held('E') || input.held('Mouse2');
     const fireL = input.hit('Z') || input.hit('Q') || input.hit('Mouse2');
     const fireR = input.hit('X') || input.hit('E') || input.hit('Mouse2');
+    this._wantL = wantL; this._wantR = wantR;
     if ((fireL || fireR) && this.stun <= 0) for (const b of this._bans) b.t = 0;
+    if ((fireL || fireR) && (this.cling || this.perch)) { this.cling = null; this.perch = null; }
     if (this.stun <= 0) {
       if (fireL) this._fire(0, wantR);
       if (fireR) this._fire(1, wantL);
@@ -157,6 +159,7 @@ export class Player {
     // gas: Shift. Tap on the ground = jump; clinging to a trunk = kick off; held = boost
     const shiftHit = input.hit('ShiftLeft') || input.hit('ShiftRight');
     const shiftHeld = input.held('ShiftLeft') || input.held('ShiftRight');
+    if (shiftHit && this.cling) { this.cling = null; this.wallTime = 0.2; }
     if (shiftHit && this.wallTime > 0 && this.wallN && !this.grounded) {
       this.vel.addScaledVector(this.wallN, 10).y += 7;
       this.odm.releaseAll();
@@ -390,6 +393,101 @@ export class Player {
     this.cam.trauma = Math.min(1, this.cam.trauma + 0.12);
   }
 
+  // ---------------------------------------------------------------- landing on branches, roofs and trunks
+  /** Holding a rope and coming in slowly: arc up onto the branch / roof it hit, or stick to the trunk / wall. */
+  _perchCheck() {
+    if (this.grounded || this.payout || this.swooping || this.stun > 0) return;
+    const p = this.pos, v = this.vel;
+    for (const h of this.odm.hooks) {
+      if (!h.attached || !h.collider || h.collider.dynamic || h.collider.type === 'ground') continue;
+      if (!(h.side ? this._wantR : this._wantL)) continue;
+      const d = p.distanceTo(h.anchor);
+      _e.subVectors(h.anchor, p).multiplyScalar(1 / Math.max(d, 1e-3));
+      const vin = v.dot(_e);
+      if (d > CFG.perch.reach + Math.max(0, vin) * 0.12 || vin > CFG.perch.maxSpeed) continue;
+      const tgt = this._perchTarget(h);
+      if (!tgt) continue;
+      this._startPerch(tgt.pos, tgt.wall ? tgt.normal : null, h);
+      return;
+    }
+  }
+  _perchTarget(h) {
+    const c = h.collider, R = CFG.radius, a = h.anchor, n = h.normal;
+    const out = { pos: new THREE.Vector3(), normal: n.clone(), wall: false };
+    if (c.type === 'capsule') {
+      _a.subVectors(c.b, c.a); const L2 = _a.lengthSq();
+      const dirY = Math.abs(_a.y) / Math.sqrt(L2 || 1);
+      if (dirY < 0.7) {   // a branch: stand on its top
+        const t = THREE.MathUtils.clamp(_b.subVectors(a, c.a).dot(_a) / (L2 || 1), 0.08, 0.92);
+        out.pos.copy(c.a).addScaledVector(_a, t); out.pos.y += c.r + R + 0.02;
+      } else { out.wall = true; out.normal.set(a.x - c.a.x, 0, a.z - c.a.z).normalize(); out.pos.copy(a).addScaledVector(out.normal, R + 0.05); }
+    } else if (n.y > 0.55) {
+      out.pos.copy(a).addScaledVector(UP, R + 0.02);
+    } else if (Math.abs(n.y) < 0.5) {
+      out.normal.set(n.x, 0, n.z).normalize();
+      // a wall or rooftop edge just above the anchor: vault up onto the top instead of clinging under the lip
+      // (step back from the edge until there's a clear spot: parapets and gutters sit right on the lip)
+      let found = false;
+      for (const back of [0.9, 1.8, 2.8]) {
+        _b.copy(a).addScaledVector(out.normal, -back); _b.y += 3.2;
+        const top = this.game.collision.raycast(_b, _d.set(0, -1, 0), 4.2, { dynamic: false });
+        if (!top || top.normal.y < 0.7 || top.collider.type === 'ground') continue;
+        out.pos.copy(top.point); out.pos.y += R + 0.02;
+        let clear = true;
+        for (const k of this.game.collision.collideSphere(out.pos, R * 0.9, { dynamic: false })) if (k.depth > 0.12 && k.collider !== top.collider) { clear = false; break; }
+        if (clear) { found = true; return out; }
+      }
+      if (!found) { out.wall = true; out.pos.copy(a).addScaledVector(out.normal, R + 0.05); }
+    } else return null;
+    for (const k of this.game.collision.collideSphere(out.pos, R * 0.9, { dynamic: false })) if (k.depth > 0.12 && k.collider !== c && k.collider.type !== 'ground') return null;
+    return out;
+  }
+  _startPerch(target, wallN, hook) {
+    const d = this.pos.distanceTo(target);
+    this.perch = {
+      s: this.pos.clone(), e: target.clone(), wall: wallN ? wallN.clone() : null, t: 0,
+      dur: THREE.MathUtils.clamp(d / 13, 0.28, 0.6),
+      c: this.pos.clone().lerp(target, 0.5).add(_e.set(0, 1.1 + d * 0.12 + (wallN ? 0 : Math.max(0, target.y - this.pos.y) * 0.3), 0)),
+      mat: hook.collider.material,
+    };
+    if (wallN) this.perch.c.addScaledVector(wallN, 1.2);
+    this.odm.braking = 0.25;
+    this.game.audio?.setGas?.(0.7);
+  }
+  _perchStep(dt) {
+    const P = this.perch;
+    P.t += dt;
+    const k = Math.min(1, P.t / P.dur), e = k * k * (3 - 2 * k), u = 1 - e;
+    // quadratic Bezier: start -> over the top -> landing spot (eased); velocity from its derivative
+    this.pos.set(0, 0, 0).addScaledVector(P.s, u * u).addScaledVector(P.c, 2 * u * e).addScaledVector(P.e, e * e);
+    const de = 6 * k * (1 - k) / P.dur;
+    this.vel.set(0, 0, 0).addScaledVector(P.s, -2 * u * de).addScaledVector(P.c, 2 * (u - e) * de).addScaledVector(P.e, 2 * e * de);
+    this.launcher(0, this._origins[0]); this.launcher(1, this._origins[1]);
+    this.odm.step(dt, this._origins);
+    if (k >= 1) {
+      this.perch = null;
+      this.odm.releaseAll(true);
+      this.pos.copy(P.e);
+      this.game.fx?.impact?.(_e.copy(P.e).addScaledVector(P.wall || UP, -CFG.radius), P.wall || UP, P.mat || 'bark');
+      this.game.audio?.land?.(0.45);
+      this.cam.trauma = Math.min(1, this.cam.trauma + 0.12);
+      this.crouch = 0.85;
+      if (P.wall) { this.cling = { n: P.wall.clone(), t: 0 }; this.vel.set(0, 0, 0); }
+      else { this.vel.multiplyScalar(0.12).setY(0); this.grounded = true; this.groundTime = 0; this._landT = 0; }
+      this.game.events.emit('player:perched', { wall: !!P.wall });
+    }
+  }
+  _clingStep(dt) {
+    const C = this.cling;
+    C.t += dt;
+    this.vel.set(0, 0, 0);
+    this.wallN = (this.wallN || new THREE.Vector3()).copy(C.n); this.wallTime = 0.2;
+    this.grounded = false; this.groundTime = 1;
+    this.launcher(0, this._origins[0]); this.launcher(1, this._origins[1]);
+    this.odm.step(dt, this._origins);
+    if (C.t > CFG.perch.clingTime) { this.cling = null; this.vel.addScaledVector(C.n, 1.5); }
+  }
+
   /** Run (or fall) into a free horse to mount it, standing on its back. */
   _tryMount() {
     const herd = this.game.herd;
@@ -454,6 +552,9 @@ export class Player {
       return;
     }
     this._tryMount();
+    if (this.perch) { this._perchStep(dt); return; }
+    if (this.cling) { this._clingStep(dt); return; }
+    this._perchCheck();
 
     const odm = this.odm;
     this.launcher(0, this._origins[0]); this.launcher(1, this._origins[1]);
@@ -812,6 +913,7 @@ export class Player {
         this.landPrep = THREE.MathUtils.clamp(1 - (tti - 0.15) / 0.55, 0, 1);
       }
     }
+    if (this.perch) this.landPrep = 1;
     if (this.landPrep > 0) {
       const hx = v.x, hz = v.z, hl = hypot(hx, hz);
       _e.set(hl > 0.5 ? hx / hl : Math.sin(this.yaw), 0, hl > 0.5 ? hz / hl : Math.cos(this.yaw));
@@ -824,6 +926,13 @@ export class Player {
     if (pd && !this.grounded) upT.lerp(pd, 0.55);
     if (this.wallN && this.wallTime > 0 && anchored) upT.copy(this.wallN);
     if (this.riding) this.riding.up(upT);
+    if (this.cling) {
+      // standing on the side of the trunk: feet on the bark, body out level, facing along the heading
+      upT.copy(this.cling.n);
+      const cf = _d.set(Math.sin(this.yaw), 0, Math.cos(this.yaw)); cf.addScaledVector(this.cling.n, -cf.dot(this.cling.n));
+      if (cf.lengthSq() < 1e-3) cf.set(0, 1, 0);
+      this.forward.copy(cf.normalize());
+    }
     if (this.landPrep > 0) upT.lerp(UP, this.landPrep);
     upT.addScaledVector(this.forward, -upT.dot(this.forward));
     if (upT.lengthSq() < 1e-3) upT.set(-Math.sin(this.yaw), 0, -Math.cos(this.yaw)).addScaledVector(this.forward, -0.0);
