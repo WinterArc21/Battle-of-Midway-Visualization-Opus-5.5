@@ -107,21 +107,38 @@ export class Horse {
 
   /** The rider's collision-centre position: seated in the saddle (stand = 0) or standing on it (stand = 1). */
   saddle(out, stand = 0) {
-    return out.set(0, 1.5 + this.bob + stand * 0.86, -0.08)
+    return out.set(0, 1.5 + this.bob - this._dip() + stand * 0.86, -0.08)
       .applyAxisAngle(_w.set(0, 0, 1), this.lean || 0)          // the saddle tilts with the horse's bank
       .applyAxisAngle(_w.set(0, 1, 0), this.yaw).add(this.pos);
   }
+  /** How far the back sinks under a rider dropping onto it: a quick give, then it springs back. */
+  _dip() { const j = this.jolt || 0; return j > 0 ? Math.sin(j * Math.PI) * 0.16 * (this.joltAmp || 1) : 0; }
+  /** A rider landed on it: the back gives, it stumbles a step and loses a little speed. */
+  hit(strength = 1) { this.jolt = 1; this.joltAmp = Math.min(1.4, 0.5 + strength); this.speed *= 1 - 0.15 * Math.min(1, strength); }
+  /** Whistled for: gallop to the caller and stop beside them. */
+  call(who) { this.caller = who; this.callT = 25; this.state = 'walk'; }
+
   /** The horse's up vector (banked), for the rider. */
   up(out) { return out.set(0, 1, 0).applyAxisAngle(_w.set(0, 0, 1), this.lean || 0).applyAxisAngle(_w.set(0, 1, 0), this.yaw); }
 
   fixedUpdate(dt) {
     const col = this.game.collision;
     this.t += dt; this.mountCd -= dt;
+    if (this.jolt > 0) this.jolt = Math.max(0, this.jolt - dt * 3.2);
     let target = 0, turn = 0;
     if (this.rider) {
       target = this.want.f > 0 ? SPEED.gallop * (this.speedMul || 1) : this.want.f < 0 ? 0 : Math.max(this.speed - 3 * dt, Math.min(this.speed, SPEED.trot));
       turn = this.want.turn;
+    } else if (this.caller && (this.callT -= dt) > 0) {
+      // answering a whistle: run to the caller's side (aiming a few metres off them so it pulls up alongside)
+      const c = this.caller.pos, dx = c.x - this.pos.x, dz = c.z - this.pos.z, d = Math.sqrt(dx * dx + dz * dz);
+      const dir = Math.atan2(dx, dz);
+      turn = THREE.MathUtils.clamp(-Math.sin(dir - this.yaw) * 3, -1, 1);
+      target = d > 40 ? SPEED.gallop : d > 7 ? Math.max(3, Math.min(SPEED.gallop, (d - 5) * 0.9)) : 0;
+      if (Math.cos(dir - this.yaw) < 0.3 && d < 12) target = Math.min(target, 2);   // swing round rather than overshoot
+      if (d < 6.5) { this.caller = null; this.state = 'graze'; this.t = 0; }
     } else {
+      this.caller = null;
       let threat = null, td = 45;
       for (const t of this.game.titans?.titans || []) {
         if (!t.alive) continue;
@@ -188,8 +205,9 @@ export class Horse {
       l.hip.rotation.x = -sw;
       l.knee.rotation.x = l.front ? lift * 1.2 : -lift * 0.9;        // fore knee folds back, hind hock folds forward
     });
-    this.trunk.position.y = 1.32 + this.bob;
-    this.trunk.rotation.x = ga * 0.07 * Math.sin(P + 1.2);           // rocking: forehand up, then hindquarters up
+    const dip = this._dip();
+    this.trunk.position.y = 1.32 + this.bob - dip;
+    this.trunk.rotation.x = ga * 0.07 * Math.sin(P + 1.2) + dip * 0.35;           // rocking: forehand up, then hindquarters up
     g.rotation.z = this.lean || 0;   // banked into the turn
     const graze = this.state === 'graze' && s < 0.4 && !this.rider;
     const nodT = graze ? 1.85 : 0.72 + ga * (0.18 + 0.12 * Math.sin(P + 2.2)) + (1 - ga) * 0.04 * Math.sin(P * 2);

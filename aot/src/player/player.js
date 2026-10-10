@@ -54,7 +54,7 @@ export class Player {
     this.stun = 0; this.grabbedBy = null; this.grabHand = null; this.struggle = 0; this.grabImmune = 0;
     this.reelLevel = 0; this.impactCooldown = 0;
     this.wishF = 0; this.wishR = 0; this.turn = 0; this.wantBoost = false; this._dashPuff = 0;
-    this.shiftHeld = 0; this.payout = false; this.mouseT = 99; this.autoSwapT = 0; this.primeT = 0; this.perch = null; this.cling = null; this.flipT = 0; this.mountCd = 0; this.rideStand = 0; this.rideStandT = 0; this.crouch = 0; if (this.riding) this.riding.rider = null; this.riding = null; this.prey = null; this.preyDist = 1e9; this.swooping = false;
+    this.shiftHeld = 0; this.payout = false; this.mouseT = 99; this.autoSwapT = 0; this.primeT = 0; this.perch = null; this.cling = null; this.flipT = 0; this.mountCd = 0; this.rideStand = 0; this.rideStandT = 0; this.crouch = 0; if (this.riding) this.riding.rider = null; this.riding = null; this.mounting = null; this.prey = null; this.preyDist = 1e9; this.swooping = false;
     if (this.targets) for (const t of this.targets) { t.valid = false; t.collider = null; t.titan = null; }
     this.odm.reset();
     this.cam.pos.copy(position).add(new THREE.Vector3(Math.sin(yaw) * -5, 2, Math.cos(yaw) * -5));
@@ -96,6 +96,7 @@ export class Player {
       const h = this.riding;
       h.want.f = F - B; h.want.turn = R - L;
       this.turn = 0; this.wishF = 0; this.wishR = 0;
+      if (this.mounting) return;   // still climbing on: you can already steer, but not leap
       // hold Shift: rise from the saddle and stand on the galloping horse; let go to spring off it
       const shiftHeld = input.held('ShiftLeft') || input.held('ShiftRight');
       const rope = input.hit('Z') || input.hit('X') || input.hit('Q') || input.hit('E') || input.hit('Mouse2');
@@ -107,6 +108,8 @@ export class Player {
         return;
       }
     }
+
+    if (input.hit('F')) this._whistle();
 
     // steering: the arrows turn your heading; the camera rides behind it
     this.turn = R - L;
@@ -488,27 +491,79 @@ export class Player {
     if (C.t > CFG.perch.clingTime) { this.cling = null; this.vel.addScaledVector(C.n, 1.5); }
   }
 
-  /** Run (or fall) into a free horse to mount it, standing on its back. */
+  /** Run up to a free horse and vault on (hand on the saddle, leg swung over), or drop onto it from the air. */
   _tryMount() {
     const herd = this.game.herd;
     if (!herd || this.mountCd > 0 || this.odm.attachedCount() || this.speed > CFG.horse.maxMountSpeed) return;
+    const air = !this.grounded && this.vel.y < -1;
+    const r = CFG.horse.mountRadius * (air ? 1.35 : 1);
     for (const h of herd.horses) {
       if (h.rider || h.mountCd > 0) continue;
       h.saddle(_e);
-      if (_e.distanceToSquared(this.pos) < CFG.horse.mountRadius ** 2 && this.vel.y < 2) {
-        this.riding = h; this.rideStand = 0.3; this.rideStandT = 0; h.rider = this; h.speed = Math.max(h.speed, hypot(this.vel.x, this.vel.z) * 0.8);
-        h.yaw = hypot(this.vel.x, this.vel.z) > 3 ? Math.atan2(this.vel.x, this.vel.z) : this.yaw;
-        this.game.audio?.land?.(0.4);
+      if (_e.distanceToSquared(this.pos) < r * r && this.vel.y < 2) {
+        const hs = hypot(this.vel.x, this.vel.z);
+        this.riding = h; h.rider = this; h.caller = null; this.lastHorse = h;
+        if (h.speed < 6) h.yaw = hs > 3 ? Math.atan2(this.vel.x, this.vel.z) : this.yaw;   // a moving horse keeps its line
+        h.speed = Math.max(h.speed, hs * 0.8);
+        this.mounting = { t: 0, air, dur: air ? 0.14 : CFG.horse.mountTime, off: new THREE.Vector3().subVectors(this.pos, h.pos), fall: -this.vel.y };
+        this.rideStand = air ? 0.55 : 1; this.rideStandT = 0;
+        if (!air) this.game.audio?.land?.(0.2);
         this.game.events.emit('player:mounted', { horse: h });
         return;
       }
     }
   }
+  /** One fixed step of climbing on: a hop over the saddle (run) or the last metre of a drop into it (air). */
+  _mountStep(dt, h) {
+    const M = this.mounting;
+    M.t += dt;
+    const k = Math.min(1, M.t / M.dur);
+    _d.copy(h.pos).add(M.off);                                   // where you took off from, carried along with the horse
+    if (!M.air) {
+      // hand on the saddle, body up and over, leg swinging across: a quick arc that lands you seated
+      const e = k * k * (3 - 2 * k);
+      h.saddle(_e, 0);
+      _a.lerpVectors(_d, _e, 0.55); _a.y = Math.max(_d.y, _e.y) + 1.4;
+      const u = 1 - e;
+      this.pos.set(0, 0, 0).addScaledVector(_d, u * u).addScaledVector(_a, 2 * u * e).addScaledVector(_e, e * e);
+      this.rideStand = 1 - THREE.MathUtils.smoothstep(k, 0.3, 0.92);   // legs go from standing to astride over the top
+      this.crouch = Math.max(this.crouch, Math.sin(Math.PI * Math.min(1, k * 1.4)) * 0.7);
+      if (k >= 1) { this.mounting = null; this.rideStand = 0; h.hit(0.15); this.game.audio?.land?.(0.3); }
+    } else {
+      // falling the last bit onto its back: accelerate into the saddle, land crouched, the horse sags under you
+      h.saddle(_e, 0.55);
+      this.pos.lerpVectors(_d, _e, k * k);
+      if (k >= 1) {
+        const s = Math.min(1.3, M.fall / 11);
+        this.mounting = null; this.rideStand = 0.55; this.rideStandT = 0; this.crouch = 0.9;
+        h.hit(s);
+        this.game.audio?.land?.(0.45 + s * 0.3);
+        this.cam.trauma = Math.min(1, this.cam.trauma + 0.12 + s * 0.15);
+      }
+    }
+  }
+  /** Fingers in mouth: your horse (or the nearest free one) comes galloping. */
+  _whistle() {
+    const herd = this.game.herd, now = this.game.time || 0;
+    if (!herd || now - (this._whistleAt ?? -9) < 1.2) return;
+    this._whistleAt = now;
+    this.game.audio?.whistle?.();
+    let best = null, bd = 450 * 450;
+    const lh = this.lastHorse;
+    if (lh && !lh.rider && lh.pos.distanceToSquared(this.pos) < 700 * 700) best = lh;
+    else for (const h of herd.horses) {
+      if (h.rider) continue;
+      const d = h.pos.distanceToSquared(this.pos);
+      if (d < bd) { bd = d; best = h; }
+    }
+    if (best) { best.call(this); this.game.hud?.message?.('YOUR HORSE IS COMING', 1.6, 'info'); }
+    else this.game.hud?.message?.('NO HORSE WITHIN EARSHOT', 1.6, 'warn');
+  }
   /** Stand up on the running horse and spring off it: you keep the horse's speed. */
   _leapOff(up) {
     const h = this.riding;
     if (!h) return;
-    this.riding = null; h.rider = null; h.mountCd = 2; this.mountCd = 1.2;
+    this.riding = null; this.mounting = null; h.rider = null; h.mountCd = 2; this.mountCd = 1.2;
     h.want.f = 0; h.want.turn = 0;
     this.vel.copy(h.vel).addScaledVector(this._heading(_e), CFG.horse.leapForward);
     this.vel.y = up;
@@ -543,8 +598,12 @@ export class Player {
         this.cam.trauma = Math.min(1, this.cam.trauma + 0.5);
         return;
       }
-      this.rideStand += ((this.rideStandT || 0) - this.rideStand) * Math.min(1, dt * 5);
-      h.saddle(this.pos, this.rideStand); this.vel.copy(h.vel);
+      if (this.mounting) this._mountStep(dt, h);
+      else {
+        this.rideStand += ((this.rideStandT || 0) - this.rideStand) * Math.min(1, dt * 5);
+        h.saddle(this.pos, this.rideStand);
+      }
+      this.vel.copy(h.vel);
       this.grounded = true; this.groundTime = 0; this.airTime = 0;
       this.yaw += Math.atan2(Math.sin(h.yaw - this.yaw), Math.cos(h.yaw - this.yaw)) * Math.min(1, dt * 9);
       this.launcher(0, this._origins[0]); this.launcher(1, this._origins[1]);
@@ -810,7 +869,7 @@ export class Player {
   // ---------------------------------------------------------------- titan interaction (contract)
   grab(titan, hand) {
     if (!this.alive || this.grabbedBy || this.grabImmune > 0) return false;
-    if (this.riding) { this.riding.rider = null; this.riding = null; }
+    if (this.riding) { this.riding.rider = null; this.riding = null; this.mounting = null; }
     this.grabbedBy = titan; this.grabHand = hand; this.struggle = 0;
     this.odm.releaseAll(true);
     this.vel.set(0, 0, 0);

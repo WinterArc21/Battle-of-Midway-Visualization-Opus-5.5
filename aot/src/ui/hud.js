@@ -526,7 +526,7 @@ const CONTROL_ROWS = `
   </div>
 </div>
 <div class="wof-ctl-more">
-  <span><kbd>Esc</kbd><kbd>P</kbd> pause</span><span><kbd>M</kbd> mute</span><span><kbd>H</kbd> controls card</span>
+  <span><kbd>Esc</kbd><kbd>P</kbd> pause</span><span><kbd>F</kbd> whistle for horse</span><span><kbd>M</kbd> mute</span><span><kbd>H</kbd> controls card</span>
   <span><kbd>R</kbd> blades (auto when dull)</span><span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> = arrows</span>
 </div>
 <p class="wof-note"><b>Mouse optional:</b> click the game to look with the mouse</p>`;
