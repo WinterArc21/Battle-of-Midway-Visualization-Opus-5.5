@@ -23,6 +23,10 @@
 import * as THREE from 'three';
 import { toonMaterial } from '../core/style.js';
 
+// Math.hypot is variadic and boxes its arguments in hot loops (it was the top source of garbage); this doesn't.
+const hypot = (a, b, c = 0) => Math.sqrt(a * a + b * b + c * c);
+
+
 const TAU = Math.PI * 2;
 const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -135,7 +139,7 @@ class CapeSim {
     }
     const add = (a, b, stiff) => {
       const dx = rp[a * 3] - rp[b * 3], dy = rp[a * 3 + 1] - rp[b * 3 + 1];
-      ia.push(a); ib.push(b); rest.push(Math.hypot(dx, dy)); k.push(stiff);
+      ia.push(a); ib.push(b); rest.push(hypot(dx, dy)); k.push(stiff);
     };
     for (let r = 0; r < CR; r++) for (let c = 0; c < CC; c++) {
       if (c + 1 < CC) add(idx(r, c), idx(r, c + 1), 1.0);
@@ -158,7 +162,7 @@ class CapeSim {
   reset(windX, windY, windZ, backX, backY, backZ) {
     const a = this.anchor, p = this.pos;
     let dx = windX * 0.05, dy = windY * 0.05 - 3.5, dz = windZ * 0.05;
-    const l = Math.hypot(dx, dy, dz) || 1; dx /= l; dy /= l; dz /= l;
+    const l = hypot(dx, dy, dz) || 1; dx /= l; dy /= l; dz /= l;
     const dy2 = CAPE_LEN / (CR - 1);
     for (let r = 0; r < CR; r++) for (let c = 0; c < CC; c++) {
       const i = (r * CC + c) * 3, ai = c * 3;
@@ -183,7 +187,7 @@ class CapeSim {
         const ux = P[a] - P[b], uy = P[a + 1] - P[b + 1], uz = P[a + 2] - P[b + 2];
         const vx = P[d] - P[e], vy = P[d + 1] - P[e + 1], vz = P[d + 2] - P[e + 2];
         const nx = vy * uz - vz * uy, ny = vz * ux - vx * uz, nz = vx * uy - vy * ux;
-        const l = Math.hypot(nx, ny, nz) || 1;
+        const l = hypot(nx, ny, nz) || 1;
         const o = (r * CC + c) * 3;
         out[o] = nx / l; out[o + 1] = ny / l; out[o + 2] = nz / l;
       }
@@ -222,7 +226,7 @@ class CapeSim {
           const ux = P[a] - P[b], uy = P[a + 1] - P[b + 1], uz = P[a + 2] - P[b + 2];
           const vx = P[d] - P[e], vy = P[d + 1] - P[e + 1], vz = P[d + 2] - P[e + 2];
           let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
-          const l = Math.hypot(nx, ny, nz) || 1;
+          const l = hypot(nx, ny, nz) || 1;
           const o = (r * CC + c) * 3;
           N[o] = nx / l; N[o + 1] = ny / l; N[o + 2] = nz / l;
         }
@@ -255,7 +259,7 @@ class CapeSim {
           const a = ia[j], b = ib[j];
           const A = a * 3, B = b * 3;
           let dx = Q[B] - Q[A], dy = Q[B + 1] - Q[A + 1], dz = Q[B + 2] - Q[A + 2];
-          const d = Math.hypot(dx, dy, dz);
+          const d = hypot(dx, dy, dz);
           if (d < 1e-7) continue;
           const diff = (d - rest[j]) / d * kk[j];
           const wa = a < CC ? 0 : 1, wb = b < CC ? 0 : 1;
@@ -818,7 +822,7 @@ export class PlayerModel {
     const p = s.position, v = s.velocity;
     _v1.set(finite(p.x), finite(p.y), finite(p.z));
     const vx = finite(v && v.x), vy = finite(v && v.y), vz = finite(v && v.z);
-    let speed = Math.hypot(vx, vy, vz);
+    let speed = hypot(vx, vy, vz);
     if (Number.isFinite(s.speed)) speed = s.speed;
     this.root.position.copy(_v1);
     this.pos.copy(_v1);
@@ -1134,7 +1138,7 @@ export class PlayerModel {
     for (let i = 0; i < this.col.length; i++) {
       const me = this.col[i].o.matrixWorld.elements;
       cp.spheres[i * 7] = me[12] - rp.x; cp.spheres[i * 7 + 1] = me[13] - rp.y; cp.spheres[i * 7 + 2] = me[14] - rp.z; cp.spheres[i * 7 + 3] = this.col[i].r;
-      const bl = Math.hypot(me[8], me[9], me[10]) || 1;
+      const bl = hypot(me[8], me[9], me[10]) || 1;
       cp.spheres[i * 7 + 4] = -me[8] / bl; cp.spheres[i * 7 + 5] = -me[9] / bl; cp.spheres[i * 7 + 6] = -me[10] / bl;
     }
     if (!cp.inited) {
@@ -1153,7 +1157,7 @@ export class PlayerModel {
     const sf = clamp(speed / 60, 0, 1);
     // apparent wind in the frame = -velocity (damped at extreme speed to keep the cloth readable)
     const wm = speed > 1 ? Math.min(1, 30 / speed) : 1;
-    { const me = this.col[0].o.matrixWorld.elements, bl = Math.hypot(me[8], me[9], me[10]) || 1;
+    { const me = this.col[0].o.matrixWorld.elements, bl = hypot(me[8], me[9], me[10]) || 1;
       cp.step(dt, -vx * wm, -vy * wm, -vz * wm, sf, -me[8] / bl, -me[9] / bl, -me[10] / bl); }
     // NaN guard
     let bad = false;
@@ -1163,7 +1167,7 @@ export class PlayerModel {
     // render copy = simulated cloth + a cheap travelling ripple (always away from the back, so it never cuts into the body)
     {
       const pa2 = pa.array, ps = cp.pos, rip = (0.012 + 0.07 * sf) * (this.wAir > 0.5 ? 1 : 0.6 + 0.4 * this.wRun);
-      const me = this.col[0].o.matrixWorld.elements, bl = Math.hypot(me[8], me[9], me[10]) || 1;
+      const me = this.col[0].o.matrixWorld.elements, bl = hypot(me[8], me[9], me[10]) || 1;
       const bx = -me[8] / bl, by = -me[9] / bl, bz = -me[10] / bl;
       for (let r = 0; r < CR; r++) {
         const rw = Math.pow(r / (CR - 1), 1.3) * rip;

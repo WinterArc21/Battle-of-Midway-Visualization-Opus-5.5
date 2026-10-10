@@ -5,6 +5,10 @@ import { buildRig } from './rig.js';
 import { outlineMaterial } from '../core/style.js';
 import { solveArm } from './ik.js';
 
+// Math.hypot is variadic and boxes its arguments in hot loops (it was the top source of garbage); this doesn't.
+const hypot = (a, b, c = 0) => Math.sqrt(a * a + b * b + c * c);
+
+
 const V3 = THREE.Vector3, Q = THREE.Quaternion, EU = THREE.Euler;
 const clamp = THREE.MathUtils.clamp, lerp = THREE.MathUtils.lerp;
 const TAU = Math.PI * 2;
@@ -217,7 +221,7 @@ export class Titan {
         _t3.copy(p).sub(sh.c);
         const cx = clamp(_t3.x, -sh.h.x, sh.h.x), cy = clamp(_t3.y, -sh.h.y, sh.h.y), cz = clamp(_t3.z, -sh.h.z, sh.h.z);
         cp.set(sh.c.x + cx, sh.c.y + cy, sh.c.z + cz);
-        dist = Math.hypot(_t3.x - cx, _t3.y - cy, _t3.z - cz);
+        dist = hypot(_t3.x - cx, _t3.y - cy, _t3.z - cz);
       }
       if (dist > rl) continue;
       const cat = (sh.part === 'nape' || sh.part === 'eye' || sh.part === 'ankle' || sh.part === 'hand' || sh.part === 'arm') ? sh.part : 'body';
@@ -446,7 +450,7 @@ export class Titan {
     this.hasPlayer = !!(pl && pl.alive && pl.position);
     if (!this.hasPlayer) { this.distH = Infinity; this.dist3 = Infinity; return; }
     this.toP.copy(pl.position).sub(this.position);
-    this.distH = Math.hypot(this.toP.x, this.toP.z);
+    this.distH = hypot(this.toP.x, this.toP.z);
     this.dist3 = this.toP.length();
     this.relYaw = wrap(Math.atan2(this.toP.x, this.toP.z) - this.yaw);
   }
@@ -475,7 +479,7 @@ export class Titan {
         this.goal = this.wanderGoal;
         this.speedTarget = canMove ? this.walkSpeed * (0.55 + 0.3 * this.mood) : 0;
         const dx = this.wanderGoal.x - this.position.x, dz = this.wanderGoal.z - this.position.z;
-        if (Math.hypot(dx, dz) < 3 + this.footR || this.stateT > 40) { this.idleDur = 2 + this.rnd() * 5; this._enter('idle'); }
+        if (hypot(dx, dz) < 3 + this.footR || this.stateT > 40) { this.idleDur = 2 + this.rnd() * 5; this._enter('idle'); }
         break;
       }
       case 'chase': {
@@ -561,7 +565,7 @@ export class Titan {
       for (let i = 0; i < 2; i++) {
         if (this.severed[i]) continue;
         const sh = i === 0 ? sL : sR;
-        const dd = Math.hypot(sh.x + fx - pl.position.x, sh.y - 0.32 * this.shoulderH - pl.position.y, sh.z + fz - pl.position.z);
+        const dd = hypot(sh.x + fx - pl.position.x, sh.y - 0.32 * this.shoulderH - pl.position.y, sh.z + fz - pl.position.z);
         if (dd < bestD) { bestD = dd; bestS = i; }
       }
       if (bestD < A * 1.0 * reachMul * (crippled ? 0.8 : 1)) { this._startReach(bestS, k); return; }
@@ -598,7 +602,7 @@ export class Titan {
       const hp = this._jpos(a.side === 0 ? 'handL' : 'handR', _t10);
       if (hp.distanceTo(pl.position) < 0.55 + 0.055 * this.height) {
         const hv = this._handVel[a.side], pv = pl.velocity || ZERO;
-        const rel = Math.hypot(pv.x - hv.x, pv.y - hv.y, pv.z - hv.z);
+        const rel = hypot(pv.x - hv.x, pv.y - hv.y, pv.z - hv.z);
         if (rel < GRAB_MAX_REL_SPEED && this._catch(a.side)) return;
       }
     }
@@ -689,7 +693,7 @@ export class Titan {
     const v = pl.velocity || ZERO, lead = 0.4;
     let tx = pl.position.x + v.x * lead, tz = pl.position.z + v.z * lead;
     let dx = tx - pos.x, dz = tz - pos.z;
-    let dist = Math.hypot(dx, dz);
+    let dist = hypot(dx, dz);
     if (dist < 1e-3) return false;
     const land = clamp(dist - (0.45 * this.armLen + 0.5), dMin * 0.6, dMax);
     tx = pos.x + dx / dist * land; tz = pos.z + dz / dist * land;
@@ -778,7 +782,7 @@ export class Titan {
     this.game.events?.emit?.('titan:step', { position: p, size: 2 * h, titan: this });
     // crushed / knocked flat by the landing
     if (this.hasPlayer && pl.alive && !pl.grabbedBy) {
-      const dx = pl.position.x - pos.x, dz = pl.position.z - pos.z, dH = Math.hypot(dx, dz), up = pl.position.y - pos.y;
+      const dx = pl.position.x - pos.x, dz = pl.position.z - pos.z, dH = hypot(dx, dz), up = pl.position.y - pos.y;
       if (up < 0.6 * h && dH < 0.25 * h + 2) {
         const d = _t11.set(dx, 0, dz); if (d.lengthSq() < 1e-4) d.set(Math.sin(this.yaw), 0, Math.cos(this.yaw));
         d.normalize(); d.y = 0.45; d.normalize().multiplyScalar(16 + 0.6 * h);
@@ -799,7 +803,7 @@ export class Titan {
     let wantYaw = this.yaw, wantSpeed = this.speedTarget, goalDirValid = false;
     if (this.goal && wantSpeed > 0) {
       const g = this._navGoal(this.goal, _g1);
-      const dx = g.x - pos.x, dz = g.z - pos.z, dist = Math.hypot(dx, dz);
+      const dx = g.x - pos.x, dz = g.z - pos.z, dist = hypot(dx, dz);
       if (dist > 0.6) {
         _dir.set(dx / dist, 0, dz / dist);
         this._avoid(_dir, wantSpeed);
@@ -832,7 +836,7 @@ export class Titan {
     pos.x = clamp(pos.x, -1100, 1100); pos.z = clamp(pos.z, -650, 1050);
     // stuck detection (chasing but not getting anywhere)
     if (goalDirValid && this.speedTarget > 1) {
-      const moved = Math.hypot(pos.x - this._lastPos.x, pos.z - this._lastPos.z);
+      const moved = hypot(pos.x - this._lastPos.x, pos.z - this._lastPos.z);
       if (moved < this.speedTarget * dt * 0.25) this.stuckT += dt; else this.stuckT = Math.max(0, this.stuckT - dt * 2);
       if (this.stuckT > 1.2) { this.sideBias = (this.rnd() < 0.5 ? -1 : 1) * (0.9 + this.rnd() * 0.8); this.sideT = 1.8; this.stuckT = 0; }
     }
@@ -876,13 +880,13 @@ export class Titan {
       for (const c of cs) {
         if (c.collider.material === 'ground' || c.collider.type === 'ground' || Math.abs(c.normal.y) > 0.75) continue;
         const w = clamp(c.depth / r, 0.1, 1.5);
-        const nl = Math.hypot(c.normal.x, c.normal.z) || 1;
+        const nl = hypot(c.normal.x, c.normal.z) || 1;
         sx += c.normal.x / nl * w; sz += c.normal.z / nl * w;
       }
     }
     if (sx || sz) {
       dir.x += sx * 1.4; dir.z += sz * 1.4;
-      const l = Math.hypot(dir.x, dir.z) || 1; dir.x /= l; dir.z /= l;
+      const l = hypot(dir.x, dir.z) || 1; dir.x /= l; dir.z /= l;
     }
     return dir;
   }
@@ -898,7 +902,7 @@ export class Titan {
       let moved = false;
       for (const c of cs) {
         if (c.collider.material === 'ground' || c.collider.type === 'ground' || Math.abs(c.normal.y) > 0.75) continue;
-        const nl = Math.hypot(c.normal.x, c.normal.z); if (nl < 1e-4) continue;
+        const nl = hypot(c.normal.x, c.normal.z); if (nl < 1e-4) continue;
         const dep = Math.min(c.depth, r * 0.6);
         pos.x += c.normal.x / nl * dep; pos.z += c.normal.z / nl * dep; moved = true;
       }
@@ -910,7 +914,7 @@ export class Titan {
     const cs = col.collideSphere(_c0, this.height * 0.17, { dynamic: false });
     for (const c of cs) {
       if (c.collider.material === 'ground' || c.collider.type === 'ground' || Math.abs(c.normal.y) > 0.75) continue;
-      const nl = Math.hypot(c.normal.x, c.normal.z); if (nl < 1e-4) continue;
+      const nl = hypot(c.normal.x, c.normal.z); if (nl < 1e-4) continue;
       const dep = Math.min(c.depth, this.height * 0.1) * 0.5;
       pos.x += c.normal.x / nl * dep; pos.z += c.normal.z / nl * dep;
     }
@@ -976,7 +980,7 @@ export class Titan {
       const vx = this.gazeTarget.x - hw.x, vy = this.gazeTarget.y - hw.y, vz = this.gazeTarget.z - hw.z;
       const cy = Math.cos(this.yaw), sy = Math.sin(this.yaw);
       const xl = vx * cy - vz * sy, zl = vx * sy + vz * cy;
-      gy = Math.atan2(xl, zl); gp = Math.atan2(-vy, Math.hypot(xl, zl));
+      gy = Math.atan2(xl, zl); gp = Math.atan2(-vy, hypot(xl, zl));
       if (Math.abs(gy) > 2.2) gy = 0;
     } else { gy = Math.sin(t * 0.33) * 0.55; gp = 0.12 + 0.08 * Math.sin(t * 0.5); }
     const gk = 1 - Math.exp(-(this.isColossal ? 1.4 : 3.5) * dt);

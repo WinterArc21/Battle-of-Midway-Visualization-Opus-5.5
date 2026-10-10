@@ -4,6 +4,10 @@ import * as THREE from 'three';
 import { CFG } from '../config.js';
 import { OdmGear } from './odm.js';
 
+// Math.hypot is variadic and boxes its arguments in hot loops (it was the top source of garbage); this doesn't.
+const hypot = (a, b, c = 0) => Math.sqrt(a * a + b * b + c * c);
+
+
 const UP = new THREE.Vector3(0, 1, 0);
 const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _c = new THREE.Vector3();
 
@@ -163,7 +167,7 @@ export class Ally {
       this.forward.set(Math.sin(this.horse.yaw), 0, Math.cos(this.horse.yaw));
       this.horse.up(this.up);
     } else if (landing) {
-      const hl = Math.hypot(this.vel.x, this.vel.z) || 1;
+      const hl = hypot(this.vel.x, this.vel.z) || 1;
       this.forward.lerp(_a.set(this.vel.x / hl, 0, this.vel.z / hl), 1 - Math.exp(-12 * dt)).normalize();
       this.up.lerp(UP, 1 - Math.exp(-14 * dt)).normalize();
     } else if (sp > 2) this.forward.lerp(_a.copy(this.vel).multiplyScalar(1 / sp).addScaledVector(this.heading, 0.4).normalize(), 1 - Math.exp(-6 * dt)).normalize();
@@ -173,7 +177,7 @@ export class Ally {
     upT.addScaledVector(this.forward, -upT.dot(this.forward));
     if (!this.horse && !landing && upT.lengthSq() > 1e-3) this.up.lerp(upT.normalize(), 1 - Math.exp(-5 * dt)).normalize();
     const dist = this.render.distanceTo(this.game.camera.position);
-    const visible = dist < 260;
+    const visible = dist < (this.game.allyRange || 260);
     const wantOutlines = dist < 45;
     if (wantOutlines !== this.outlinesOn) { this.outlinesOn = wantOutlines; for (const o of this.outlines) o.visible = wantOutlines; }
     if (this.model) {

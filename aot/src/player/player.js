@@ -4,6 +4,10 @@ import * as THREE from 'three';
 import { CFG } from '../config.js';
 import { OdmGear } from './odm.js';
 
+// Math.hypot is variadic and boxes its arguments in hot loops (it was the top source of garbage); this doesn't.
+const hypot = (a, b, c = 0) => Math.sqrt(a * a + b * b + c * c);
+
+
 const UP = new THREE.Vector3(0, 1, 0);
 const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _c = new THREE.Vector3(), _d = new THREE.Vector3();
 const _e = new THREE.Vector3(), _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion();
@@ -254,7 +258,7 @@ export class Player {
     const col = this.game.collision, p = this.render;
     const sgn = side === 0 ? -1 : 1;
     const fwd = this._heading(_a), right = this._right(_b);
-    const v = this.vel, hs = Math.hypot(v.x, v.z);
+    const v = this.vel, hs = hypot(v.x, v.z);
     const ax = hs > 8 ? v.x / hs : fwd.x, az = hs > 8 ? v.z / hs : fwd.z;
     const range = CFG.hook.range - 3;
     const gy = col.groundHeight(p.x, p.z);
@@ -269,27 +273,27 @@ export class Player {
     const rel = this._released[side];
     // aim where you face: the camera's view direction decides; Z takes the left half of the view, X the right
     const cf = this.game.camera.getWorldDirection(this._camF || (this._camF = new THREE.Vector3()));
-    const crx = -cf.z, crz = cf.x, crl = Math.hypot(crx, crz) || 1;          // camera right (horizontal)
+    const crx = -cf.z, crz = cf.x, crl = hypot(crx, crz) || 1;          // camera right (horizontal)
     const bans = this._bans;
     const push = (x, y, z, c, titan) => {
       const dx = x - lx, dy = y - ly, dz = z - lz;
-      const d = Math.hypot(dx, dy, dz);
+      const d = hypot(dx, dy, dz);
       if (d < (titan ? 2.5 : 7) || d > range) return;
-      const dl = Math.hypot(dx, dz) || 1e-6;
+      const dl = hypot(dx, dz) || 1e-6;
       const ahead = (dx * ax + dz * az) / dl;
       if (ahead < -0.35) return;                                        // never behind you
       const lateral = ((dx * right.x + dz * right.z) / dl) * sgn;          // > 0: on this rope's side
       const sd = 1 - Math.min(1, Math.abs(d - 40) / 60);
       const sh = this.grounded ? THREE.MathUtils.clamp((dy - 3) / 18, 0, 1) : THREE.MathUtils.clamp((dy + 10) / 30, 0, 1);
       // facing: how close to the centre of your view (cone ~55° wide); this dominates the pick
-      const ex = x - p.x, ey = y - p.y, ez = z - p.z, el = Math.hypot(ex, ey, ez) || 1;
+      const ex = x - p.x, ey = y - p.y, ez = z - p.z, el = hypot(ex, ey, ez) || 1;
       // keyboard: facing is left/right only (the height preference picks anchors overhead); mouse: full 3D aim
       const mouseAim = this.mouseT < 3;
-      const hl = Math.hypot(ex, ez) || 1, cfl = Math.hypot(cf.x, cf.z) || 1;
+      const hl = hypot(ex, ez) || 1, cfl = hypot(cf.x, cf.z) || 1;
       const cosc = mouseAim ? (ex * cf.x + ey * cf.y + ez * cf.z) / el : (ex * cf.x + ez * cf.z) / (hl * cfl);
       const facing = THREE.MathUtils.clamp((cosc - CFG.aim.cone) / (1 - CFG.aim.cone), -1, 1);
       // which half of the view: Z wants the left half, X the right (a centred anchor suits either)
-      const half = ((ex * crx + ez * crz) / (crl * (Math.hypot(ex, ez) || 1))) * sgn;
+      const half = ((ex * crx + ez * crz) / (crl * (hypot(ex, ez) || 1))) * sgn;
       let score = facing * CFG.aim.facingWeight + (half < -0.08 ? -1.2 : Math.min(half, 0.4) * 0.8)
         + sd * 0.7 + sh * 0.9 + (ahead + 1) * 0.25 + THREE.MathUtils.clamp(lateral, 0, 0.6) * 0.3;
       for (const b of bans) if (b.t > 0 && (x - b.p.x) ** 2 + (y - b.p.y) ** 2 + (z - b.p.z) ** 2 < 36) score -= 4;
@@ -319,7 +323,7 @@ export class Player {
       if (!c.hookable) continue;
       if (c.type === 'cylinder') {
         if (c.y1 - c.y0 < 4 && c.r < 1.5) continue;   // cannons, barrels, posts: useless to swing from
-        let dx = p.x - c.x, dz = p.z - c.z; const l = Math.hypot(dx, dz) || 1; dx /= l; dz /= l;
+        let dx = p.x - c.x, dz = p.z - c.z; const l = hypot(dx, dz) || 1; dx /= l; dz /= l;
         const y = THREE.MathUtils.clamp(wantY, c.y0 + 1.5, c.y1 - 1);
         push(c.x + dx * c.r, y, c.z + dz * c.r, c, null);
       } else if (c.type === 'capsule') {
@@ -394,8 +398,8 @@ export class Player {
       if (h.rider || h.mountCd > 0) continue;
       h.saddle(_e);
       if (_e.distanceToSquared(this.pos) < CFG.horse.mountRadius ** 2 && this.vel.y < 2) {
-        this.riding = h; this.rideStand = 0.3; this.rideStandT = 0; h.rider = this; h.speed = Math.max(h.speed, Math.hypot(this.vel.x, this.vel.z) * 0.8);
-        h.yaw = Math.hypot(this.vel.x, this.vel.z) > 3 ? Math.atan2(this.vel.x, this.vel.z) : this.yaw;
+        this.riding = h; this.rideStand = 0.3; this.rideStandT = 0; h.rider = this; h.speed = Math.max(h.speed, hypot(this.vel.x, this.vel.z) * 0.8);
+        h.yaw = hypot(this.vel.x, this.vel.z) > 3 ? Math.atan2(this.vel.x, this.vel.z) : this.yaw;
         this.game.audio?.land?.(0.4);
         this.game.events.emit('player:mounted', { horse: h });
         return;
@@ -545,7 +549,7 @@ export class Player {
         // carrying momentum from the air: skid
         v.x -= (v.x / hs) * CFG.ground.skid * dt; v.z -= (v.z / hs) * CFG.ground.skid * dt;
       } else {
-        const dx = target.x - v.x, dz = target.z - v.z, dl = Math.hypot(dx, dz);
+        const dx = target.x - v.x, dz = target.z - v.z, dl = hypot(dx, dz);
         const maxStep = CFG.ground.accel * dt * (hs > CFG.ground.run + 0.5 ? 0.4 : 1);
         const s = dl > maxStep ? maxStep / dl : 1;
         v.x += dx * s; v.z += dz * s;
@@ -809,7 +813,7 @@ export class Player {
       }
     }
     if (this.landPrep > 0) {
-      const hx = v.x, hz = v.z, hl = Math.hypot(hx, hz);
+      const hx = v.x, hz = v.z, hl = hypot(hx, hz);
       _e.set(hl > 0.5 ? hx / hl : Math.sin(this.yaw), 0, hl > 0.5 ? hz / hl : Math.cos(this.yaw));
       tf.normalize().lerp(_e, this.landPrep);
     }
@@ -829,7 +833,7 @@ export class Player {
 
     if (this.model) {
       const hooks = this.odm.hooks.map((h) => ({ attached: h.attached, anchor: h.attached ? h.anchor : null, state: h.state }));
-      const run = this.riding ? 0 : this.grounded ? Math.min(1, Math.hypot(v.x, v.z) / CFG.ground.run) : (this.wallN && anchored ? 1 : 0);
+      const run = this.riding ? 0 : this.grounded ? Math.min(1, hypot(v.x, v.z) / CFG.ground.run) : (this.wallN && anchored ? 1 : 0);
       const slash = this.slashT >= 0 ? this.slashT / CFG.combat.slashTime : -1;
       this.boostLevel += ((this.boosting || this._dashPuff > 0 ? 1 : 0) - this.boostLevel) * damp(18, dt);
       this.crouch = Math.max(0, this.crouch - dt * 2.6);
@@ -977,10 +981,10 @@ export class Player {
       let dy = Math.atan2(dx, dz) - this.yaw;
       dy = Math.atan2(Math.sin(dy), Math.cos(dy));
       this.yaw += dy * damp(3.2, dt);
-      const el = Math.atan2(nwCam.center.y - this.render.y, Math.hypot(dx, dz));
+      const el = Math.atan2(nwCam.center.y - this.render.y, hypot(dx, dz));
       this.pitch += (THREE.MathUtils.clamp(el * 0.7, -0.6, 0.45) - this.pitch) * damp(3, dt);
     } else if (this.mouseT > 1.5 && !this.grabbedBy) {
-      const v = this.vel, hs = Math.hypot(v.x, v.z);
+      const v = this.vel, hs = hypot(v.x, v.z);
       if (!this.grounded && hs > 7 && !this.turn) {
         let dy = Math.atan2(v.x, v.z) - this.yaw;
         dy = Math.atan2(Math.sin(dy), Math.cos(dy));
