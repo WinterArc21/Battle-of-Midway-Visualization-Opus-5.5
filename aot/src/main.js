@@ -207,6 +207,11 @@ function step(dt) {
   game.flow.update(simDt);
   try { game.fx?.update(simDt); } catch (e) { console.error('fx.update', e); }
   try { game.world?.update?.(simDt, camera.position); } catch (e) { console.error('world.update', e); }
+  // the forest breathes: leaves drift down around you under the canopy
+  if (game.fx?.leaves && camera.position.z > 190 && camera.position.y < 110 && Math.random() < simDt * 2.2) {
+    _n.set(camera.position.x + (Math.random() - 0.5) * 40, camera.position.y + 8 + Math.random() * 14, camera.position.z + (Math.random() - 0.3) * 40);
+    game.fx.leaves(_n, 2);
+  }
 
   // keep the shadow frustum centred on the action
   const sun = game.world?.sun;
