@@ -61,8 +61,14 @@ export class Horse {
     this.neck = new THREE.Group(); this.neck.position.set(0, 0.3, 0.78); this.neck.rotation.x = 0.72; this.trunk.add(this.neck);
     mesh([
       piece(new THREE.CylinderGeometry(0.17, 0.33, 0.95, 12), coat, { p: [0, 0.42, 0], s: [0.8, 1, 1.15] }),
-      piece(new THREE.BoxGeometry(0.07, 0.95, 0.16), dark, { p: [0, 0.45, -0.2], r: [0.12, 0, 0] }),              // mane
     ], this.neck, 0.018);
+    // mane: tufts along the crest that stream and bounce with the gait
+    this.mane = [];
+    for (let i = 0; i < 6; i++) {
+      const tuft = new THREE.Group(); tuft.position.set(0, 0.08 + i * 0.15, -0.2 + i * 0.012); this.neck.add(tuft);
+      mesh([piece(new THREE.ConeGeometry(0.06, 0.26, 5), dark, { p: [0, 0, -0.12], r: [-1.35, 0, 0], s: [0.55, 1, 1] })], tuft);
+      this.mane.push(tuft);
+    }
     this.head = new THREE.Group(); this.head.position.set(0, 0.88, 0.02); this.neck.add(this.head);
     mesh([
       // the face runs forward-down from the poll (head frame is tilted 0.72 rad with the neck)
@@ -190,6 +196,13 @@ export class Horse {
     this.neck.rotation.x += (nodT - this.neck.rotation.x) * Math.min(1, dt * (graze ? 1.5 : 8));
     this.head.rotation.x = graze ? -0.3 : 0.05 - ga * 0.12;
     this.tail.rotation.x = 0.25 + ga * 0.75 + Math.sin(this.phase * 3.1) * 0.12;
+    this.tail.rotation.z = Math.sin(this.phase * 1.7) * 0.15 * (0.4 + ga);
+    // mane streams back with speed and ripples down the crest
+    const stream = Math.min(1, s / 15);
+    this.mane.forEach((m, i) => {
+      m.rotation.x = -0.35 * stream + Math.sin(P * 2 - i * 0.7) * (0.08 + 0.18 * ga);
+      m.rotation.z = Math.sin(this.phase * 2.3 + i) * 0.1 * stream;
+    });
   }
 }
 

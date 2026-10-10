@@ -433,6 +433,9 @@ function faceTexture() {
   return _faceTex;
 }
 
+const _fa = new THREE.Vector3(), _fdown = new THREE.Vector3(0, -1, 0);
+const SOLE = 0.075;   // ankle joint height above the sole
+
 export class PlayerModel {
   constructor(game) {
     this.game = game;
@@ -446,6 +449,20 @@ export class PlayerModel {
     this.cape = new CapeSim();
     this._buildCapeMesh();
     if (this._face) this.j.head.add(this._face);
+    // loose locks on top of the baked hair: they stream back with speed and flutter in the air
+    this.locks = [];
+    {
+      const hm = toonMaterial(0x2b2019);
+      const lg = new THREE.ConeGeometry(0.022, 0.1, 4); lg.translate(0, -0.05, 0);
+      for (let i = 0; i < 5; i++) {
+        const piv = new THREE.Group();
+        piv.position.set((i - 2) * 0.035, 0.235 - Math.abs(i - 2) * 0.012, -0.03 - Math.abs(i - 2) * 0.012);
+        const m = new THREE.Mesh(lg, hm); m.castShadow = false;
+        m.rotation.x = Math.PI * 0.62;          // swept back over the crown
+        piv.add(m); this.j.head.add(piv);
+        this.locks.push(piv);
+      }
+    }
 
     // smoothed state
     this.wRide = 0; this.wCrouch = 0; this.wAir = 0; this.wSpin = 0; this.wGrab = 0; this.wSlash = 0; this.wHook = 0; this.wBoost = 0; this.wRun = 0;
@@ -749,6 +766,33 @@ export class PlayerModel {
   }
 
   // ───────────────────────────── contract helpers ─────────────────────────────
+  /** Measure each foot against the surface under it and nudge the pelvis drop / leg lifts (a tiny IK controller). */
+  _footIK(w, dt) {
+    if (!this.footLift) { this.footLift = [0, 0]; this.footDrop = 0; }
+    const col = this.game?.collision;
+    if (!col || w < 0.01) {
+      this.footDrop *= 0.8; this.footLift[0] *= 0.8; this.footLift[1] *= 0.8;
+      return;
+    }
+    this.root.updateMatrixWorld(true);
+    const d = [0, 0];
+    const legs = [this.j.legL, this.j.legR];
+    for (let i = 0; i < 2; i++) {
+      legs[i].an.getWorldPosition(_fa);
+      _fa.y += 0.8;
+      const hit = col.raycast(_fa, _fdown, 1.9, { dynamic: false });
+      const gy = hit ? hit.point.y : _fa.y - 0.8 - SOLE - 0.4;      // nothing under the foot: treat as floating
+      d[i] = gy - (_fa.y - 0.8 - SOLE);                              // > 0: the sole is below the surface
+    }
+    const k = Math.min(1, dt * 12);
+    // drop the pelvis until the lower-hanging foot touches; lift (bend) any foot that would sink in
+    // the pelvis moves so the lower foot just touches (raising it if both would sink, dropping it if both float);
+    // only the difference between the feet bends a leg
+    const dm = Math.min(d[0], d[1]);
+    this.footDrop = clamp(this.footDrop - dm * k, -0.25, 0.45);
+    for (let i = 0; i < 2; i++) this.footLift[i] = clamp(this.footLift[i] + (d[i] - dm - this.footLift[i] * 0.35) * k * 1.2, 0, 0.45);
+  }
+
   hookOrigin(side, out) {
     const tip = side === 0 ? this.launcherL : this.launcherR;
     tip.updateWorldMatrix(true, false);
@@ -1026,6 +1070,14 @@ export class PlayerModel {
     TC[HDX] += clamp(-gazeE * 0.95 - thTot + 0.12, -1.15, 0.6) * (this.wAir > 0.01 || thTot > 0.3 ? 1 : 0.0);
     if (this.wSpin > 0.01) TC[HDX] = lerp(TC[HDX], clamp(-thTot + 0.05, -1.1, 0.4), this.wSpin);
 
+    // foot planting (from last frame's measurement): bend the leg whose foot would sink into the slope
+    const ikW = (1 - this.wAir) * (1 - this.wRide) * (1 - 0.8 * this.wRun) * (s.footIK === false ? 0 : 1);
+    if (this.footLift && ikW > 0.01) {
+      for (let sd = 0; sd < 2; sd++) {
+        const o = sd * 4, l = this.footLift[sd] * ikW;
+        TC[LHX + o] -= 1.25 * l; TC[LKX + o] += 2.5 * l; TC[LAX + o] -= 1.25 * l;
+      }
+    }
     // ── damped joint values
     const fast = 11 + 26 * this.wSlash;
     for (let i = 0; i < NCH; i++) {
@@ -1037,13 +1089,22 @@ export class PlayerModel {
     const jt = this.j;
     jt.spine.rotation.set(J[SPX], J[SPY], J[SPZ]);
     jt.head.rotation.set(J[HDX], J[HDY], 0);
+    if (this.locks) {
+      const wind = clamp(this.speedS / 40, 0, 1);
+      for (let i = 0; i < this.locks.length; i++) {
+        const l = this.locks[i];
+        l.rotation.x = -0.25 * wind + Math.sin(t * (9 + i * 1.7) + i) * (0.05 + 0.22 * wind);
+        l.rotation.z = Math.sin(t * (7 + i) + i * 2) * 0.12 * wind;
+      }
+    }
     jt.armL.sh.rotation.set(J[LSX], J[LSY], J[LSZ]); jt.armR.sh.rotation.set(J[RSX], J[RSY], -J[RSZ]);
     jt.armL.el.rotation.set(-J[LEX], 0, 0); jt.armR.el.rotation.set(-J[REX], 0, 0);
     jt.armL.wr.rotation.set(J[LWX], 0, 0); jt.armR.wr.rotation.set(J[RWX], 0, 0);
     jt.legL.hip.rotation.set(J[LHX], 0, J[LHZ]); jt.legR.hip.rotation.set(J[RHX], 0, -J[RHZ]);
     jt.legL.kn.rotation.set(J[LKX], 0, 0); jt.legR.kn.rotation.set(J[RKX], 0, 0);
     jt.legL.an.rotation.set(J[LAX], 0, 0); jt.legR.an.rotation.set(J[RAX], 0, 0);
-    this.pivot.position.y = J[BOB] * (1 - this.wAir);
+    this.pivot.position.y = J[BOB] * (1 - this.wAir) - (this.footDrop || 0) * ikW;
+    this._footIK(ikW, dt);
     // blades only when drawn
     for (let i = 0; i < 2; i++) jt.blades[i].visible = hasBlades;
     // blade shine: flash through the sweep
