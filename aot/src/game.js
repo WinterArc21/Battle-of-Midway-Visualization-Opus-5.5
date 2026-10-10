@@ -17,6 +17,7 @@ const STEPS = [
   { id: 'steer', keys: ['←', '→'], text: 'Steer with the arrows. Let go of Z / X to fly free, then grab the next anchor', done: (p, s) => s.steerT > 0.6 },
   { id: 'gas', keys: ['Shift'], text: 'Hold Shift for a gas boost (tap it on the ground to jump)', done: (p, s) => s.boostT > 0.6 },
   { id: 'cut', keys: ['Space'], text: 'Space cuts. Hit the nape on the back of the neck, fast', done: (p, s) => s.cuts > 0, modes: ['training', 'expedition'] },
+  { id: 'aim', keys: ['←', '→', 'C'], text: 'Ropes go where you face: turn to put the marker on the tree you want. C skips to the next anchor', done: (p, s) => s.steerT > 1.5 },
   { id: 'slack', keys: ['↓'], text: 'On a rope, hold ↓ to let the wire out for a longer swing', done: (p, s) => s.payoutT > 0.5 },
 ];
 

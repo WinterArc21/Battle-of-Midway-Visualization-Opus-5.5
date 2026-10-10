@@ -16,7 +16,8 @@ The keyboard is all you need. The mouse is optional.
 |---|---|
 | **← →** | turn. On a rope: swing round the anchor |
 | **↑ / ↓** | run / brake. In the air: steer. On a rope: **↑** pumps the swing, **↓** lets the wire out for a longer swing |
-| **Z** / **X** (hold) | fire the left / right rope. Each one locks onto the best anchor ahead on its side, shown by a **Z** / **X** marker. Let go to release |
+| **Z** / **X** (hold) | fire the left / right rope. Each one goes where you face: the anchor nearest the centre of your view, Z in the left half, X in the right, shown by a **Z** / **X** marker before you fire. Let go to release |
+| **C** | the marker isn't on the anchor you want? skip both ropes to the next-best anchors |
 | **Z + X** | both ropes: zip forward between the two anchors. If either side has a titan in view, both ropes go to the titan |
 | **Shift** | gas boost (the reel pulls harder too). Tap it on the ground to jump; clinging to a trunk, it kicks you off |
 | **Space** | cut. Hold it while flying fast for Levi's spinning slash. Swooping in on a nape, press it early: the cut fires when you arrive |

@@ -34,6 +34,7 @@ export const CFG = {
   wire: { snapSpeed: 7, rebound: 0.08 },   // a wire snapping taut faster than this kicks back a little
   modelLift: 0.4,           // the model's body centre sits this far above the collision sphere's centre
   horse: { mountRadius: 2.6, maxMountSpeed: 24, leap: 9.5, ropeLeap: 5, leapForward: 2 },
+  aim: { cone: 0.55, facingWeight: 3.2, banTime: 4 },   // ropes go where you face (cos of the cone edge)
   keys: {
     turnGround: 2.7, turnAir: 1.9, turnRope: 1.6,   // rad/s heading turn from ← →
     followRate: 1.1,                                // airborne heading eases toward the flight direction

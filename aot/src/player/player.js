@@ -32,6 +32,7 @@ export class Player {
     this._origins = [new THREE.Vector3(), new THREE.Vector3()];
     this._modelPos = new THREE.Vector3();
     this._released = [0, 1].map(() => ({ p: new THREE.Vector3(), t: 0 }));
+    this._bans = [];
     this.reset(new THREE.Vector3(0, 50.6, 0), 0);
   }
 
@@ -115,6 +116,7 @@ export class Player {
     const wantR = input.held('X') || input.held('E') || input.held('Mouse2');
     const fireL = input.hit('Z') || input.hit('Q') || input.hit('Mouse2');
     const fireR = input.hit('X') || input.hit('E') || input.hit('Mouse2');
+    if ((fireL || fireR) && this.stun <= 0) for (const b of this._bans) b.t = 0;
     if (this.stun <= 0) {
       if (fireL) this._fire(0, wantR);
       if (fireR) this._fire(1, wantL);
@@ -147,7 +149,15 @@ export class Player {
     }
     this.spaceHeld = shiftHeld ? this.spaceHeld + dt : 0;
     this.wantBoost = shiftHeld;
-    if (input.hit('C')) this._dash(input);
+    // C: the marker isn't on the anchor you want? skip both picks to the next-best ones
+    if (input.hit('C') || input.hit('Tab')) {
+      for (const T of this.targets) if (T.valid) {
+        const b = this._bans.find((x) => x.t <= 0) || (this._bans.length < 6 ? (this._bans[this._bans.length] = { p: new THREE.Vector3(), t: 0 }) : this._bans[0]);
+        b.p.copy(T.point); b.t = CFG.aim.banTime;
+      }
+      this.game.audio?.bladeSwap?.();
+    }
+    for (const b of this._bans) b.t -= dt;
 
     // blades: Space cuts, held at speed in the air = Levi's spinning slash; dull blades swap themselves
     if (input.hit('R')) this._swapBlades();
@@ -239,6 +249,10 @@ export class Player {
     const sp = v.length(), flying = !this.grounded && sp > 10;
     const other = this.odm.hooks[1 - side];
     const rel = this._released[side];
+    // aim where you face: the camera's view direction decides; Z takes the left half of the view, X the right
+    const cf = this.game.camera.getWorldDirection(this._camF || (this._camF = new THREE.Vector3()));
+    const crx = -cf.z, crz = cf.x, crl = Math.hypot(crx, crz) || 1;          // camera right (horizontal)
+    const bans = this._bans;
     const push = (x, y, z, c, titan) => {
       const dx = x - lx, dy = y - ly, dz = z - lz;
       const d = Math.hypot(dx, dy, dz);
@@ -249,7 +263,18 @@ export class Player {
       const lateral = ((dx * right.x + dz * right.z) / dl) * sgn;          // > 0: on this rope's side
       const sd = 1 - Math.min(1, Math.abs(d - 40) / 60);
       const sh = this.grounded ? THREE.MathUtils.clamp((dy - 3) / 18, 0, 1) : THREE.MathUtils.clamp((dy + 10) / 30, 0, 1);
-      let score = sd + sh * 1.2 + (ahead + 1) * 0.8 + THREE.MathUtils.clamp(lateral, titan ? 0 : -0.6, 0.6) * 1.3;
+      // facing: how close to the centre of your view (cone ~55° wide); this dominates the pick
+      const ex = x - p.x, ey = y - p.y, ez = z - p.z, el = Math.hypot(ex, ey, ez) || 1;
+      // keyboard: facing is left/right only (the height preference picks anchors overhead); mouse: full 3D aim
+      const mouseAim = this.mouseT < 3;
+      const hl = Math.hypot(ex, ez) || 1, cfl = Math.hypot(cf.x, cf.z) || 1;
+      const cosc = mouseAim ? (ex * cf.x + ey * cf.y + ez * cf.z) / el : (ex * cf.x + ez * cf.z) / (hl * cfl);
+      const facing = THREE.MathUtils.clamp((cosc - CFG.aim.cone) / (1 - CFG.aim.cone), -1, 1);
+      // which half of the view: Z wants the left half, X the right (a centred anchor suits either)
+      const half = ((ex * crx + ez * crz) / (crl * (Math.hypot(ex, ez) || 1))) * sgn;
+      let score = facing * CFG.aim.facingWeight + (half < -0.08 ? -1.2 : Math.min(half, 0.4) * 0.8)
+        + sd * 0.7 + sh * 0.9 + (ahead + 1) * 0.25 + THREE.MathUtils.clamp(lateral, 0, 0.6) * 0.3;
+      for (const b of bans) if (b.t > 0 && (x - b.p.x) ** 2 + (y - b.p.y) ** 2 + (z - b.p.z) ** 2 < 36) score -= 4;
       // titans (and training dummies) are the point: within reach and roughly ahead they win outright
       if (titan) score += 1.6 + (ahead > 0.5 ? 0.4 : 0);
       if (flying && !titan) {
