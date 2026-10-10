@@ -118,7 +118,7 @@ const boot = async () => {
   if (!params.has('noallies')) await load(() => import('./player/ally.js'), async (am) => {
     const mm = await import('./player/model.js');
     const starts = [[-40, 55, 150], [30, 70, 230], [-80, 45, 300], [90, 60, 190], [0, 80, 360]];
-    starts.slice(0, +(params.get('allies') ?? 3)).forEach(([x, y, z], i) => {
+    starts.slice(0, +(params.get('allies') ?? 5)).forEach(([x, y, z], i) => {
       const model = new mm.PlayerModel(game);
       model.autoGas = false;
       if (model.root && !model.root.parent) scene.add(model.root);

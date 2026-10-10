@@ -113,7 +113,7 @@ export class Horse {
     this.t += dt; this.mountCd -= dt;
     let target = 0, turn = 0;
     if (this.rider) {
-      target = this.want.f > 0 ? SPEED.gallop : this.want.f < 0 ? 0 : Math.max(this.speed - 3 * dt, Math.min(this.speed, SPEED.trot));
+      target = this.want.f > 0 ? SPEED.gallop * (this.speedMul || 1) : this.want.f < 0 ? 0 : Math.max(this.speed - 3 * dt, Math.min(this.speed, SPEED.trot));
       turn = this.want.turn;
     } else {
       let threat = null, td = 45;

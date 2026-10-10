@@ -26,6 +26,7 @@ export class Ally {
     this.rand = mulberry(Math.floor(seed * 1000) + 7);
     this._origins = [new THREE.Vector3(), new THREE.Vector3()];
     this.boost = 0;
+    this.horse = null; this._mp = new THREE.Vector3();
     // cheap comrades: no shadow casting (tiny at range), cel outlines only when close to the camera
     this.outlines = [];
     model?.root?.traverse((o) => {
@@ -62,7 +63,47 @@ export class Ally {
     return null;
   }
 
+  /** Ride in formation: slot = metres to the leader's right (x) and ahead (z, negative = behind). */
+  mount(horse, slot) {
+    this.horse = horse; horse.rider = this; this.slot = slot;
+    this.odm.releaseAll(true);
+    horse.saddle(this.pos); this.prev.copy(this.pos); this.render.copy(this.pos);
+    this.dismountT = -1;
+  }
+  dismount(silent) {
+    const h = this.horse;
+    if (!h) return;
+    this.horse = null; h.rider = null; h.mountCd = 3; h.want.f = 0; h.want.turn = 0;
+    this.vel.copy(h.vel); this.vel.y = silent ? 0 : 9.5;
+    this.nextT = 0.15; this.boost = silent ? 0 : 0.6;
+  }
+  _ride(dt) {
+    const h = this.horse, g = this.game, p = g.player;
+    const lead = p.riding || p;
+    const ly = p.riding ? p.riding.yaw : p.yaw;
+    const fx = Math.sin(ly), fz = Math.cos(ly), rx = -fz, rz = fx;
+    const lp = p.riding ? p.riding.pos : p.pos;
+    // aim a little ahead of the slot so the column flows; gallop to catch up, ease off when ahead
+    const sx = lp.x + rx * this.slot.x + fx * this.slot.z, sz = lp.z + rz * this.slot.x + fz * this.slot.z;
+    const tx = sx + fx * 10 - h.pos.x, tz = sz + fz * 10 - h.pos.z;
+    let d = Math.atan2(tx, tz) - h.yaw; d = Math.atan2(Math.sin(d), Math.cos(d));
+    h.want.turn = Math.max(-1, Math.min(1, -d * 2.5));
+    const behind = (sx - h.pos.x) * fx + (sz - h.pos.z) * fz;
+    const leadSpeed = (lead.speed ?? lead.vel?.length?.() ?? 0);
+    h.want.f = behind > -1 || leadSpeed > 8 ? 1 : 0;
+    h.speedMul = behind > 6 ? 1.3 : behind > 1.5 ? 1.12 : behind < -2 ? 0.88 : 1;
+    h.saddle(this.pos); this.vel.copy(h.vel);
+    // leave the saddle when the leader takes to the air, or when a titan comes close (staggered, not all at once)
+    if (this.dismountT < 0) {
+      let titanNear = false;
+      for (const t of g.titans?.titans || []) if (t.alive && t.position.distanceToSquared(this.pos) < 70 * 70) { titanNear = true; break; }
+      if (!p.riding || titanNear) this.dismountT = 0.15 + this.rand() * 0.9;
+    } else if ((this.dismountT -= dt) <= 0) this.dismount();
+    if (h.crashed > 0) { h.crashed = 0; this.dismount(); }
+  }
+
   fixedUpdate(dt) {
+    if (this.horse) { this.prev.copy(this.pos); this._ride(dt); return; }
     this.prev.copy(this.pos);
     const odm = this.odm, v = this.vel, p = this.pos;
     this.launcher(0, this._origins[0]); this.launcher(1, this._origins[1]);
@@ -116,12 +157,15 @@ export class Ally {
   update(dt, alpha) {
     this.render.lerpVectors(this.prev, this.pos, alpha);
     const sp = this.vel.length();
-    if (sp > 2) this.forward.lerp(_a.copy(this.vel).multiplyScalar(1 / sp).addScaledVector(this.heading, 0.4).normalize(), 1 - Math.exp(-6 * dt)).normalize();
+    if (this.horse) {
+      this.forward.set(Math.sin(this.horse.yaw), 0, Math.cos(this.horse.yaw));
+      this.horse.up(this.up);
+    } else if (sp > 2) this.forward.lerp(_a.copy(this.vel).multiplyScalar(1 / sp).addScaledVector(this.heading, 0.4).normalize(), 1 - Math.exp(-6 * dt)).normalize();
     const pd = this.odm.pullDir(this.render, _b);
     const upT = _c.copy(UP);
     if (pd) upT.lerp(pd, 0.5);
     upT.addScaledVector(this.forward, -upT.dot(this.forward));
-    if (upT.lengthSq() > 1e-3) this.up.lerp(upT.normalize(), 1 - Math.exp(-5 * dt)).normalize();
+    if (!this.horse && upT.lengthSq() > 1e-3) this.up.lerp(upT.normalize(), 1 - Math.exp(-5 * dt)).normalize();
     const dist = this.render.distanceTo(this.game.camera.position);
     const visible = dist < 260;
     const wantOutlines = dist < 45;
@@ -129,9 +173,10 @@ export class Ally {
     if (this.model) {
       this.model.root.visible = visible;
       if (visible) this.model.update(dt, {
-        position: this.render, velocity: this.vel, forward: this.forward, up: this.up, grounded: false, running: 0,
+        riding: this.horse ? 1 : 0, horseGallop: this.horse?.gallop || 0, horsePhase: this.horse?.phase || 0,
+        position: this._mp.copy(this.render).addScaledVector(this.up, 0.4), velocity: this.vel, forward: this.forward, up: this.up, grounded: !!this.horse, running: 0,
         hooks: this.odm.hooks.map((h) => ({ attached: h.attached, anchor: h.attached ? h.anchor : null, state: h.state })),
-        boosting: this.boost > 0 ? 1 : 0, slash: -1, spin: false, grabbed: false, blades: true, speed: sp, alive: true,
+        boosting: this.boost > 0 ? 1 : 0, slash: -1, spin: false, grabbed: false, blades: !this.horse, speed: sp, alive: true,
       });
     }
     this.launcher(0, this._origins[0]); this.launcher(1, this._origins[1]);

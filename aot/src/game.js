@@ -107,10 +107,20 @@ export class Game {
     // the Expedition rides out like the Survey Corps: mounted, just outside the breached gate
     if (mode === 'expedition' && g.herd?.horses?.length) {
       const h = g.herd.horses[0];
-      h.pos.set(0, g.collision.groundHeight(0, 14), 14); h.yaw = 0; h.speed = 8; h.home.copy(h.pos);
+      h.pos.set(0, g.collision.groundHeight(0, 34), 34); h.yaw = 0; h.speed = 12; h.home.copy(h.pos);
       h.rider = g.player; g.player.riding = h; g.player.yaw = 0;
       h.saddle(g.player.pos); g.player.prev.copy(g.player.pos);
-    }
+      // the squad rides out with you in a wedge, cloaks streaming
+      const SLOTS = [[-5, -4], [5, -4], [-10, -9], [10, -9], [0, -10], [-15, -14], [15, -14]];
+      (g.allies || []).forEach((a, i) => {
+        const hh = g.herd.horses[i + 1];
+        if (!hh || !SLOTS[i]) return;
+        const [sx, sz] = SLOTS[i];
+        hh.pos.set(sx, g.collision.groundHeight(sx, 34 + sz), 34 + sz); hh.yaw = 0; hh.speed = 12; hh.home.copy(hh.pos);
+        a.dismount?.(true);
+        a.mount?.(hh, { x: -sx, z: sz });    // slot x is to the leader's right: world -x when facing +z
+      });
+    } else for (const a of g.allies || []) a.dismount?.(true);
     this._startTutorial();
     if (mode === 'expedition') {
       g.hud?.message?.('DEDICATE YOUR HEART', 2.6, 'big');
