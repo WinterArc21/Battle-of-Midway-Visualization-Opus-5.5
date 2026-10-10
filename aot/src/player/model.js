@@ -392,6 +392,47 @@ const _q1 = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _q3 = new THRE
 const _m1 = new THREE.Matrix4();
 const AX = new THREE.Vector3(1, 0, 0), AY = new THREE.Vector3(0, 1, 0), AZ = new THREE.Vector3(0, 0, 1);
 
+/** Anime face, painted once: heavy upper lids, grey-green irises with highlights, stern brows, nose, mouth. */
+let _faceTex = null;
+function faceTexture() {
+  if (_faceTex) return _faceTex;
+  const W = 256, H = 160, c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const g = c.getContext('2d');
+  const ink = '#1a120c';
+  for (const side of [-1, 1]) {
+    const cx = W / 2 + side * 46, cy = 70;
+    // white of the eye
+    g.fillStyle = '#fbf6ee';
+    g.beginPath(); g.ellipse(cx, cy, 22, 13, 0, 0, Math.PI * 2); g.fill();
+    // iris + pupil + highlights
+    const ir = g.createRadialGradient(cx, cy - 3, 2, cx, cy, 13);
+    ir.addColorStop(0, '#6f9a86'); ir.addColorStop(0.7, '#3e6a5a'); ir.addColorStop(1, '#1f3a30');
+    g.fillStyle = ir; g.beginPath(); g.ellipse(cx + side * -2, cy + 1, 10.5, 12.5, 0, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#0d1410'; g.beginPath(); g.ellipse(cx + side * -2, cy + 1, 4.5, 6, 0, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#ffffff'; g.beginPath(); g.arc(cx + side * -2 - 4, cy - 4, 3, 0, Math.PI * 2); g.fill();
+    g.beginPath(); g.arc(cx + side * -2 + 3, cy + 5, 1.5, 0, Math.PI * 2); g.fill();
+    // heavy upper lid (thick, angled down toward the nose: the determined Survey Corps glare)
+    g.strokeStyle = ink; g.lineCap = 'round';
+    g.lineWidth = 6;
+    g.beginPath(); g.moveTo(cx - side * 25, cy - 4 + 2); g.quadraticCurveTo(cx, cy - 18, cx + side * 24, cy - 8); g.stroke();
+    g.lineWidth = 2;
+    g.beginPath(); g.moveTo(cx - side * 18, cy + 12); g.quadraticCurveTo(cx, cy + 16, cx + side * 18, cy + 10); g.stroke();
+    // brow: low and angled, pinched toward the centre
+    g.lineWidth = 7;
+    g.beginPath(); g.moveTo(cx - side * 26, cy - 22); g.lineTo(cx + side * 22, cy - 30); g.stroke();
+  }
+  // nose (shadow line) and mouth
+  g.strokeStyle = 'rgba(150,90,60,0.8)'; g.lineWidth = 3;
+  g.beginPath(); g.moveTo(W / 2 + 4, 92); g.lineTo(W / 2 + 7, 112); g.lineTo(W / 2 + 1, 114); g.stroke();
+  g.strokeStyle = '#6a3a2a'; g.lineWidth = 3.5;
+  g.beginPath(); g.moveTo(W / 2 - 13, 136); g.quadraticCurveTo(W / 2, 133, W / 2 + 13, 137); g.stroke();
+  _faceTex = new THREE.CanvasTexture(c);
+  _faceTex.colorSpace = THREE.SRGBColorSpace;
+  _faceTex.anisotropy = 4;
+  return _faceTex;
+}
+
 export class PlayerModel {
   constructor(game) {
     this.game = game;
@@ -404,6 +445,7 @@ export class PlayerModel {
     this._build();
     this.cape = new CapeSim();
     this._buildCapeMesh();
+    if (this._face) this.j.head.add(this._face);
 
     // smoothed state
     this.wRide = 0; this.wCrouch = 0; this.wAir = 0; this.wSpin = 0; this.wGrab = 0; this.wSlash = 0; this.wHook = 0; this.wBoost = 0; this.wRun = 0;
@@ -467,9 +509,26 @@ export class PlayerModel {
       const f = mesh(new THREE.ConeGeometry(0.03, 0.07, 6), M.hair, head, (i - 2) * 0.04, 0.197 - Math.abs(i - 2) * 0.012, 0.085, 0.004);
       f.rotation.x = Math.PI * 0.92; f.rotation.z = (i - 2) * 0.12;
     }
+    // fuller, spikier fringe and side locks (the Survey Corps cut)
+    for (let i = 0; i < 4; i++) {
+      const f = mesh(new THREE.ConeGeometry(0.026, 0.085, 5), M.hair, head, (i - 1.5) * 0.05, 0.2, 0.07, 0.004);
+      f.rotation.x = Math.PI * 0.86; f.rotation.z = (i - 1.5) * 0.25;
+    }
     for (const sx of [1, -1]) {
-      mesh(new THREE.SphereGeometry(0.012, 8, 6), M.eye, head, sx * 0.038, 0.135, 0.097, 0).scale.set(0.9, 1.7, 0.5);
-      mesh(new THREE.SphereGeometry(0.018, 8, 6), M.skin, head, sx * 0.1, 0.14, 0, 0.004);
+      const lock = mesh(new THREE.ConeGeometry(0.028, 0.11, 5), M.hair, head, sx * 0.092, 0.15, 0.03, 0.004);
+      lock.rotation.z = sx * 2.9; lock.rotation.x = 0.15;
+      const back = mesh(new THREE.ConeGeometry(0.035, 0.09, 5), M.hair, head, sx * 0.04, 0.1, -0.085, 0.004);
+      back.rotation.x = 2.6; back.rotation.z = sx * 0.3;
+      mesh(new THREE.SphereGeometry(0.018, 8, 6), M.skin, head, sx * 0.1, 0.14, 0, 0.004);   // ears
+    }
+    // the face: painted anime eyes, brows, nose shadow and mouth on a patch that hugs the skull
+    {
+      const face = new THREE.Mesh(
+        new THREE.SphereGeometry(0.1, 24, 16, Math.PI / 2 - 0.95, 1.9, 0.95, 1.15),
+        new THREE.MeshBasicMaterial({ map: faceTexture(), transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, fog: true }));
+      face.position.set(0, 0.145, 0.008); face.scale.set(0.96 * 1.012, 1.08 * 1.012, 1.012);
+      face.renderOrder = 1;
+      this._face = face;    // attached after the bake (not merged into the body)
     }
     // cravat (the white Survey Corps jabot)
     const cr = mesh(new THREE.ConeGeometry(0.052, 0.13, 10), M.cravat, chest, 0, 0.375, 0.12, 0.008);
