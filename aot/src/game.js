@@ -48,6 +48,11 @@ export class Game {
     });
     ev.on('player:grabbed', () => game.hud?.message?.('GRABBED! MASH SPACE TO CUT FREE', 2.2, 'warn'));
     ev.on('player:escaped', () => game.hud?.message?.('CUT FREE!', 1.2, 'info'));
+    ev.on('player:wireGrabbed', () => game.hud?.message?.('IT HAS YOUR WIRE! LET GO OR SPACE TO CUT', 2, 'warn'));
+    ev.on('player:wireCut', () => game.hud?.message?.('WIRE CUT', 1.1, 'info'));
+    ev.on('player:shaken', () => game.hud?.message?.('SHAKEN OFF!', 1.2, 'warn'));
+    ev.on('player:trampled', () => game.hud?.message?.('THROWN FROM THE SADDLE!', 1.6, 'warn'));
+    ev.on('titan:windup', (e) => { if (e.kind === 'charge' && game.player?.riding) game.hud?.message?.('ABNORMAL CHARGING — BREAK AWAY!', 1.8, 'warn'); });
     ev.on('player:bladeBroken', () => game.hud?.message?.(game.player.spares > 0 ? 'Blades dull: swapping to a fresh pair' : 'NO BLADES LEFT: find a supply depot (crates under a flag)', 2, 'warn'));
     let lastNone = -9;
     ev.on('hook:none', () => {

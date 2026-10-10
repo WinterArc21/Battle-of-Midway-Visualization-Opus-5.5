@@ -189,7 +189,9 @@ export class Player {
 
     // blades: Space cuts, held at speed in the air = Levi's spinning slash; dull blades swap themselves
     if (input.hit('R')) this._swapBlades();
-    if (cut && this.swapT <= 0) {
+    const yh = this.odm.hooks[0].yank ? this.odm.hooks[0] : this.odm.hooks[1].yank ? this.odm.hooks[1] : null;
+    if (cut && yh) this._cutWire(yh);                 // a titan has your wire: Space severs it
+    else if (cut && this.swapT <= 0) {
       // swooping in on a nape: Space primes the cut and the blades fire the moment you reach it
       if (this.swooping && this.preyDist < CFG.combat.primeRange) this.primeT = CFG.combat.primeTime;
       else this._slash();
@@ -571,6 +573,20 @@ export class Player {
     this.game.audio?.land?.(0.3);
   }
 
+  /** Cut your own wire where a titan's fist has it: you drop free, it hauls on nothing. */
+  _cutWire(h) {
+    const at = _a.copy(h.anchor).sub(this.pos);
+    const L = at.length();
+    at.multiplyScalar(Math.min(2.5, L * 0.3) / (L || 1)).add(this.pos);
+    this.game.fx?.sparks?.(at, _b.copy(this.pos).sub(at).normalize(), 18);
+    this.odm.release(h.side, true);
+    this.game.audio?.slash?.(true);
+    this.vel.multiplyScalar(0.55);
+    this.cam.trauma = Math.min(1, this.cam.trauma + 0.25);
+    this.slashT = 0; this.slashHit = true;
+    this.game.events.emit('player:wireCut', {});
+  }
+
   _swapBlades() {
     if (this.swapT > 0 || this.spares <= 0 || this.blade >= 0.999) return;
     this.spares--; this.swapT = CFG.combat.swapTime;
@@ -643,8 +659,9 @@ export class Player {
     // cutting speed (how Survey Corps take a titan down, and the keyboard player's assist). Ropes on anything
     // else go slack meanwhile so they don't hold you back.
     let prey = null;
+    const yanked = odm.hooks[0].yank || odm.hooks[1].yank;   // being hauled in: no swoop until you get free
     for (const hk of odm.hooks) {
-      const t = hk.attached ? hk.collider?.userData?.titan || hk.collider?.userData?.dummy : null;
+      const t = hk.attached && !yanked ? hk.collider?.userData?.titan || hk.collider?.userData?.dummy : null;
       if (t && t.alive && t.napeWorld) { prey = t; break; }
     }
     this.swooping = false; this.prey = prey; this.preyDist = 1e9;
