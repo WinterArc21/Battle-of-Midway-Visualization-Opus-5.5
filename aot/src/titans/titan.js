@@ -275,6 +275,8 @@ export class Titan {
   }
 
   _releasePlayer() {
+    const al = this.act?.ally;
+    if (al && al.grabbedBy === this) al.freed(this);
     const pl = this.game.player;
     if (pl && pl.grabbedBy === this) { if (typeof pl.release === 'function') pl.release(this); else pl.grabbedBy = null; }
   }
@@ -307,6 +309,9 @@ export class Titan {
         } else effect = damage > 10 ? 'shallow' : 'none';
         break;
       default: effect = damage > 20 ? 'shallow' : 'none';
+    }
+    if ((part === 'arm' || part === 'hand') && damage > 25 && this.state === 'grab' && this.act?.ally) {
+      this._releasePlayer(); this._setFist(this.act.side, false); this.act = null; this.stunT = 1.2; this._enter('stun'); effect = effect === 'none' ? 'shallow' : effect;
     }
     if (effect !== 'none') {
       this.flinch = Math.min(1, this.flinch + (effect === 'shallow' ? 0.5 : 1));
@@ -367,7 +372,7 @@ export class Titan {
     this.fist[0] && this._setFist(0, false); this.fist[1] && this._setFist(1, false);
     this.ik[0].wT = this.ik[1].wT = 0;
     this.fallSign = this.isColossal ? -1 : (this.rnd() < 0.5 ? 1 : -1);
-    this.game.events?.emit?.('titan:killed', { titan: this, point: point ? point.clone() : this._headWorld(new V3()) });
+    this.game.events?.emit?.('titan:killed', { titan: this, by: this.killedBy || null, point: point ? point.clone() : this._headWorld(new V3()) });
     this.game.audio?.napeKill?.();
     this.game.fx?.steam?.(point || this._headWorld(new V3()), Math.max(2, this.height * 0.18), 3);
   }
@@ -412,7 +417,7 @@ export class Titan {
         const pl = this.game.player;
         if (this.sweepT >= 0 && this.sweepT < 3.6 && pl.position.y > 25 && Math.abs(pl.position.z) < 40) th = this.sweepT < 1.4 ? 0.6 + 0.4 * this.sweepT / 1.4 : 1;
         else if (this.steamOn && this.distH < 45) th = 0.6;
-      } else if (st === 'reach' && a) th = a.t < a.W + a.E + a.H ? 1 : 0.35;
+      } else if (st === 'reach' && a) th = a.ally ? 0.3 : a.t < a.W + a.E + a.H ? 1 : 0.35;
       else if (st === 'swat' && a) th = a.t < a.W + a.S + 0.1 ? 1 : 0.3;
       else if (st === 'bite' && a) th = a.t < a.W + a.B ? 0.9 : 0.3;
       else if (st === 'grab') th = 1;
@@ -604,12 +609,22 @@ export class Titan {
     if (!a) { this._enter('chase'); return; }
     a.t += dt;
     this.faceYaw = this.yaw + this.relYaw * 0.6; this.speedTarget = 0;
-    if (!this.hasPlayer) { this.act = null; this._enter('chase'); return; }
+    const al = a.ally;
+    if (al) {
+      if (!al.alive || al.grabbedBy || al.horse) { this.act = null; this.cdAttack = 1; this._enter('chase'); return; }
+      this.faceYaw = Math.atan2(al.pos.x - this.position.x, al.pos.z - this.position.z);
+    } else if (!this.hasPlayer) { this.act = null; this._enter('chase'); return; }
+    const tp = al ? al.pos : pl.position, tv = al ? al.vel : pl.velocity;
     const tE = a.W + a.E;
-    if (a.t < a.W) { a.pred.copy(pl.position); }
+    if (a.t < a.W) { a.pred.copy(tp); }
     else if (a.t < tE) {
       const lead = a.E * 0.7;
-      a.pred.copy(pl.position).addScaledVector(pl.velocity || ZERO, lead * 0.9);
+      a.pred.copy(tp).addScaledVector(tv || ZERO, lead * 0.9);
+    }
+    if (al) {
+      if (a.t > a.W && a.t < tE + a.H && this._jpos(a.side === 0 ? 'handL' : 'handR', _t10).distanceTo(al.pos) < 1.6 + 0.1 * this.height) { this._catchAlly(a.side, al); return; }
+      if (a.t > tE + a.H + a.R) { this.act = null; this.cdAttack = 2 + this.rnd(); this._enter('chase'); }
+      return;
     }
     if (a.t > a.W && a.t < a.W + a.E + a.H && this._grabAllowed()) {
       // catch check: palm within reach of the player, and the player is not streaking past the hand
@@ -632,11 +647,30 @@ export class Titan {
     this._enter('grab');
     return true;
   }
+  /** Close the fist on a comrade: they get a few seconds for someone to cut the hand or the nape. */
+  _catchAlly(side, ally) {
+    ally.grab(this, this.J[side === 0 ? 'handL' : 'handR']);
+    this._setFist(side, true);
+    this.act = { side, t: 0, dur: 5.5, ally };
+    this.mgr.allyGrabT = 30;
+    this._enter('grab');
+    this.game.audio?.titanGroan?.(this.position, this.height);
+  }
   _thinkGrab(dt) {
     const a = this.act, pl = this.game.player;
     this.speedTarget = 0; this.faceYaw = null;
     if (!a) { this._enter('chase'); return; }
     a.t += dt;
+    if (a.ally) {
+      if (a.ally.grabbedBy !== this) { this._setFist(a.side, false); this.act = null; this.cdAttack = 2.5; this._enter('chase'); return; }
+      if (a.t >= a.dur) {
+        this.game.audio?.titanGroan?.(this.position, this.height);
+        a.ally.eaten(this);
+        this._setFist(a.side, false);
+        this.act = null; this.cdAttack = 3; this._enter('chew');
+      }
+      return;
+    }
     if (pl.grabbedBy !== this && a.t > 0.1) { // player got free some other way
       this._setFist(a.side, false); this.act = null; this.cdAttack = 2.5; this._enter('chase'); return;
     }
@@ -674,6 +708,19 @@ export class Titan {
       this.cdCharge = 11 + this.rnd() * 6; this._enter('charge'); this._windupEvent('charge', 0.8);
       this.game.audio?.titanGroan?.(this.position, this.height * 1.3);
       return true;
+    }
+    if (!((this.mgr.allyGrabT || 0) > 0) && this.cdAttack <= 0 && this.rnd() < dt * 1.6) {
+      for (const al of this.game.allies || []) {
+        if (!al.alive || al.grabbedBy || al.horse || !al.job || al.job.titan !== this) continue;
+        const ry = wrap(Math.atan2(al.pos.x - this.position.x, al.pos.z - this.position.z) - this.yaw);
+        if (Math.abs(ry) > 1.1) continue;
+        const sL = this._jpos('armL', _t7).distanceTo(al.pos), sR = this._jpos('armR', _t8).distanceTo(al.pos);
+        const side = this.severed[0] ? 1 : this.severed[1] ? 0 : sL <= sR ? 0 : 1;
+        if (Math.min(sL, sR) > this.armLen * 1.05 || this.severed[side]) continue;
+        this.act = { side, t: 0, k: 1, W: 0.4, E: 0.4, H: 0.3, R: 0.5, pred: new V3(), cur: new V3(), start: new V3(), ally: al };
+        this._setFist(side, false); this._enter('reach');
+        return true;
+      }
     }
     const hk = this._ropeOnMe();
     if (this.clingT > 0.9 && (this.cdAttack <= 0.5 || this.clingT > 1.5)) {
@@ -1368,7 +1415,7 @@ export class Titan {
       this.jawExtra += 0.45 * (1 - e) + 0.15;
       this._fp(sg * (this.d.shoulderX * this.s + 0.35 * A), this.shoulderH + 0.25 * A, -0.45 * A, _tw);
       _tw2.copy(a.pred);
-      if (a.t >= tE && this.hasPlayer) a.pred.lerp(this.game.player.position, 0.15);
+      if (a.t >= tE && (a.ally || this.hasPlayer)) a.pred.lerp(a.ally ? a.ally.pos : this.game.player.position, 0.15);
       _tw.lerp(_tw2, e);
       let retract = 0;
       if (a.t > tE + a.H) retract = sm((a.t - tE - a.H) / a.R);

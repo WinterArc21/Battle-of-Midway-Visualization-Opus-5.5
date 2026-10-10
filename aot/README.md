@@ -40,6 +40,17 @@ so add **Shift** for speed.
 Supply depots (crates under a Survey Corps flag) refill gas, blades and health. There is one on the wall top
 either side of the gate, one on the Garrison HQ roof and one on a platform in the forest.
 
+### Titans fight back
+* **Wire grab:** rope a titan from the front and dawdle, and it may snatch your wire and haul you in. Let go of the
+  rope key, or press **Space** to cut the wire.
+* **Shake-off:** hang against a titan's body on a short rope and it thrashes until your anchors tear out.
+* **Abnormals charge riders:** a crouch and a roar, then a sprint straight at your horse. Swerve, or leap off.
+
+### Your squad
+Comrades fly in pairs: one calls a titan and cuts its ankles, the other finishes the nape. They call out new
+titans by clock bearing, and their kills show in the feed on the right. A titan can catch a comrade: cut the
+hand that holds them, or kill the titan, within about five seconds.
+
 ## How the ODM gear works (the physics)
 
 `src/player/odm.js` and `src/player/player.js`, stepped at a fixed 120 Hz with render interpolation:
